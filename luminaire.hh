@@ -126,7 +126,7 @@ class CLuminaire {
             // Return gain H
             return(gain);
         }
-
+z
         // Sensor subsystem time constant tau computation
         double compute_compute_tau_time_const(double LUX){
 
