@@ -6,11 +6,11 @@
 #include "PID.hh"
 
 // Function to handle serial communication and user interface
-void handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y, float &u, time_t inicial_time) {
+int handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y, float &u, time_t inicial_time) {
 
   // Check if there is data available to read
   if (!Serial.available()) {
-    return;
+    return 0;
   }
 
   // Initialize variables
@@ -150,7 +150,11 @@ void handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y,
       Serial.print(" ");
       Serial.println(lum.get_total_flicker());
 	  }
+  } else if (command.startsWith("R")) { // Reset the system
+      Serial.println("Resetting System...");
+      return 2;
   }
+  return 1;
 }
 
 #endif // INTERFACE_HH

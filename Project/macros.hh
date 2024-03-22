@@ -3,6 +3,7 @@
 
 // Macros for board configuration
 #define LED_PIN 15
+#define LDR_PIN A1
 #define PWM_FREQ 60000
 #define DAC_RANGE 4095
 #define SERIAL_BAUD 115200

@@ -52,7 +52,7 @@ float analog_low_pass_filter() {
 
   // Analog read
   for (int i = 0; i < AVGR_FILTER_SAMPLE_NUM; i++) {
-    arr[i] = analogRead(A1);
+    arr[i] = analogRead(LDR_PIN);
   }
 
   // Compute the median - start by ordering the array
@@ -142,7 +142,23 @@ void loop() {
   uint8_t b[4];
 
   //Check for user input
-  handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
+  uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
+
+  if (reset == 2){
+    //We need to compute the cross-coupling gains
+    //TO-DO:
+    //We need to set illuminance of all leds to zero 
+    //Then each led measures external illuminance
+    //Turn this led on
+    //With this led on, we measure K11 and the other LEDS measure K21, K31,...
+    //Then Turn this off and led 2 ON
+    // We measure K12, K22, K32,...
+    //...
+    analogWrite(LED_PIN, int(0));
+    delay(3000);
+    analogWrite(LED_PIN, int(DAC_RANGE));
+    delay(3000);
+  }
 
   //If it is time yo send message, send message to other core
   if (millis() >= time_to_write) {
