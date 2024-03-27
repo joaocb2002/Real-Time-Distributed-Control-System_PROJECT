@@ -65,7 +65,13 @@ uint32_t error_flags_to_msg(uint8_t canintf, uint8_t eflg) {
 void print_message(int first_char, int second_char, int node, int id) {
   Serial.print(char(first_char));
   Serial.print(" ");
-  Serial.print(char(second_char));
+  if (char(first_char) == 'd' || char(first_char) == 'R' ){
+    Serial.print(second_char);
+  }
+  else{
+    //The case where the second char is a char
+    Serial.print(char(second_char));
+  }
   Serial.print(" at node ");
   Serial.print(node, HEX);
   Serial.print(" with id ");

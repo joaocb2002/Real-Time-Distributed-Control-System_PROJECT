@@ -36,8 +36,15 @@ bool detected_errors{ false };
 
 MCP2515 can0{ spi0, 17, 19, 16, 18, 10000000 };  // CS, INT, SCK, MISO, MOSI
 
+//*************Calibration stuff**************
+//Maxium number of picos possible
+const uint8_t N = 8;
 //List to hold the ids of the other picos
-uint8_t id_list[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+uint8_t id_list[N] = {};
+//NxN matrix to hold the values of the cross coupling gains
+uint8_t Gains[N][N] = {};
+//o is the external illumination I measure, I do not care about other
+uint8_t o = 0; 
 //flag to hold status of calibration.
 bool calibrated = false;
 //flag to hold if there is a message to be sent 
@@ -149,28 +156,7 @@ void loop() {
   uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
 
   if (reset == 2){
-    //Turn off my led and all the other LEDs
-    turn_off_every(b);
-    delay(1000); //Wait some time for steady state
-    //Measure my external illuminance
-    //Send message to other picos ordering them to measure their external illuminance
-    //TO_DO
-
-    //Iterate over each one of the picos
-    //At each iteration, turn one led on and measure stuff
-    for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
-      if(id_list[i] != 0){
-        turn_off_except(b,id_list[i]);
-        //Measure gains
-        //Send message to other picos, telling them to measure gains
-        //TO_DO
-      }
-    }
-
-    turn_off_every(b);
-    //calibrated = true; // The picos are calibrated
-    //We need to also send message to other picos saying that calibration is over
-    //TO_DO
+    reset_func();
   }
 
   //If pico is NOT yet calibrated, send the I am alive message
@@ -217,15 +203,20 @@ void loop() {
       //If i receive a reset message
       if(char(b[0]) == 'R')
       {
-        //Set calibrated to off, we are in reset mode (PID control is off)
-        calibrated = false;
+        if (b[1] == 0){
+          //Set calibrated to off, we are in reset mode (PID control is off)
+          calibrated = false;
+        }
+        else if(b[1] == 1){
+          calibrated = true;
+        }
       }
 
       //If message is for me 
       if(b[2] == id_list[0]){
         //Someone is ordering me to set my duty cycle
         if (char(b[0]) == 'd'){
-          analogWrite(LED_PIN, int(b[1]));
+          analogWrite(LED_PIN, int(float(b[1]/100*DAC_RANGE)));
         }
       }
 
@@ -337,26 +328,39 @@ void loop1() {
   }
 }
 
-//Function to turn off the LED of all of the picos, including me
-void turn_off_every(uint8_t b[]){
+void reset_func(){
+  //Tell other picos i am entering reset/calibration mode
+  send_message_every(int('R'),0);
+
+  //Turn off my led and all the other LEDs
   analogWrite(LED_PIN, int(0)); //turn off my led
-  //Loop through each know pico and tell them to turn off their led
-  for (int i = 1; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
+  send_message_every(int('d'),0);
+
+  delay(1000); //Wait some time for steady state
+  //Measure my external illuminance
+  o = lum.lux_func(analog_low_pass_filter());
+  Serial.println(o);
+  //Send message to other picos ordering them to measure their external illuminance
+  //TO_DO
+
+  //Iterate over each one of the picos
+  //At each iteration, turn one led on and measure stuff
+  for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
     if(id_list[i] != 0){
-      b[3] = ICC_WRITE_DATA;  // Identifier
-      //The message: set (d)uty cycle to zero
-      b[2] = id_list[i];
-      b[0] = int('d'); //Convert the character to corresponding ascii value
-      b[1] = 0;
-      rp2040.fifo.push(bytes_to_msg(b));
-      
-      delay(write_delay);//Delay to make sure messages are sent with no errors
+      turn_off_except(id_list[i]);
+      //Measure gains
+      //Send message to other picos, telling them to measure gains
+      //TO_DO
     }
   }
+
+  calibrated = true;
+  //Tell other picos calibration is done
+  send_message_every(int('R'),1);
 }
 
 //Function to turn off the LED of all of the picos except one
-void turn_off_except(uint8_t b[], uint8_t id){
+void turn_off_except(uint8_t id){
   analogWrite(LED_PIN, int(0)); //turn off my led
   //Loop through each know pico and tell them to turn off their led
   for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
@@ -370,22 +374,15 @@ void turn_off_except(uint8_t b[], uint8_t id){
       //If the id is other than my id
       //Send message to turn that id on
       else if(id_list[i] == id && i != 0){
-        b[3] = ICC_WRITE_DATA;  // Identifier
-        //The message: set (d)uty cycle to zero
-        b[2] = id_list[i];
-        b[0] = int('d'); //Convert the character to corresponding ascii value
-        b[1] = DAC_RANGE;
-        rp2040.fifo.push(bytes_to_msg(b));
+        //The message: set (d)uty cycle to max
+        //Max 8byte int is 255, so send the pwm from 0 to 100, where 100 is converted to DAC_RANGE
+        send_message(id_list[i],int('d'),100);
       }
 
       //Else send message to turn off
       else{ 
-        b[3] = ICC_WRITE_DATA;  // Identifier
-        //The message: set (d)uty cycle to zero
-        b[2] = id_list[i];
-        b[0] = int('d'); //Convert the character to corresponding ascii value
-        b[1] = 0;
-        rp2040.fifo.push(bytes_to_msg(b));
+         //The message: set (d)uty cycle to zero
+        send_message(id_list[i],int('d'),0);
       }
       
       delay(write_delay);//Delay to make sure messages are sent with no errors
@@ -393,4 +390,26 @@ void turn_off_except(uint8_t b[], uint8_t id){
   }
 }
 
+//Function to format message and send to fifo queue
+void send_message(uint8_t id, uint8_t first_byte, uint8_t second_byte){
+    uint8_t b[4];
+    b[3] = ICC_WRITE_DATA;  // Identifier
+    b[2] = id;
+    b[0] = first_byte; 
+    b[1] = second_byte;
+    rp2040.fifo.push(bytes_to_msg(b));
+    Serial.print(">>>>>> Sending ");
+    print_message(b[0], b[1], b[2], b[2]);
+}
+
+//Function to send message to all the picos except me 
+void send_message_every(uint8_t first_byte, uint8_t second_byte){
+  //Loop through each know pico other than me
+  for (int i = 1; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
+    if(id_list[i] != 0){
+      send_message(id_list[i],first_byte, second_byte);
+      delay(write_delay);//Delay to make sure messages are sent with no errors
+    }
+  }
+}
 //*************End of code***************
