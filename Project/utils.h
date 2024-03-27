@@ -61,14 +61,16 @@ uint32_t error_flags_to_msg(uint8_t canintf, uint8_t eflg) {
 }
 
 //Prints the contents of a CAN message
-void print_message(int number, int node, int id, int val) {
-  Serial.print(number);
+//I updated this function for our use case
+void print_message(int first_char, int second_char, int node, int id) {
+  Serial.print(char(first_char));
+  Serial.print(" ");
+  Serial.print(char(second_char));
   Serial.print(" at node ");
   Serial.print(node, HEX);
   Serial.print(" with id ");
   Serial.print(id, HEX);
-  Serial.print(" : ");
-  Serial.println(val);
+  Serial.println("");
 }
 
 /////////////////////////////////////////////////////

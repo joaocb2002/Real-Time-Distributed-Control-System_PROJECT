@@ -38,6 +38,10 @@ MCP2515 can0{ spi0, 17, 19, 16, 18, 10000000 };  // CS, INT, SCK, MISO, MOSI
 
 //List to hold the ids of the other picos
 uint8_t id_list[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+//flag to hold status of calibration.
+bool calibrated = false;
+//flag to hold if there is a message to be sent 
+bool message = false;
 
 //*************Functions**************
 bool my_repeating_timer_callback(struct repeating_timer *t) {
@@ -145,31 +149,52 @@ void loop() {
   uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
 
   if (reset == 2){
-    //We need to compute the cross-coupling gains
-    //TO-DO:
-    //We need to set illuminance of all leds to zero 
-    //Then each led measures external illuminance
-    //Turn this led on
-    //With this led on, we measure K11 and the other LEDS measure K21, K31,...
-    //Then Turn this off and led 2 ON
-    // We measure K12, K22, K32,...
-    //...
-    analogWrite(LED_PIN, int(0));
-    delay(3000);
-    analogWrite(LED_PIN, int(DAC_RANGE));
-    delay(3000);
+    //Turn off my led and all the other LEDs
+    turn_off_every(b);
+    delay(1000); //Wait some time for steady state
+    //Measure my external illuminance
+    //Send message to other picos ordering them to measure their external illuminance
+    //TO_DO
+
+    //Iterate over each one of the picos
+    //At each iteration, turn one led on and measure stuff
+    for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
+      if(id_list[i] != 0){
+        turn_off_except(b,id_list[i]);
+        //Measure gains
+        //Send message to other picos, telling them to measure gains
+        //TO_DO
+      }
+    }
+
+    turn_off_every(b);
+    //calibrated = true; // The picos are calibrated
+    //We need to also send message to other picos saying that calibration is over
+    //TO_DO
   }
 
-  //If it is time yo send message, send message to other core
-  if (millis() >= time_to_write) {
+  //If pico is NOT yet calibrated, send the I am alive message
+  if(!calibrated){
+    message = true;
+    //The message: (i)m (a)live
+    b[2] = id_list[0];
+    b[0] = int('i'); //Convert the character to corresponding ascii value
+    b[1] = int('a');
+  }
+
+  //If it is time to send message, send message to other core
+  //Conditions: there must be a message to be sent AND there is a minimum time between messages to avoid overflow
+  if (message && millis() >= time_to_write) {
+    message = false;
     b[3] = ICC_WRITE_DATA;  // Identifier
-    b[2] = id_list[0];      // Which id is sending the msg? 0 index corresponds to me
-    b[0] = counterTx;
-    b[1] = (counterTx >> 8);
+    //b[2] = id_list[0];      // Which id is sending the msg? 0 index corresponds to me
+    //b[0] = counterTx;
+    //b[1] = (counterTx >> 8);
     rp2040.fifo.push(bytes_to_msg(b));
+
     Serial.print(">>>>>> Sending ");
-    print_message(counterTx, b[2], b[2], counterTx);
-    counterTx++;
+    print_message(b[0], b[1], b[2], b[2]);
+    //counterTx++;
     time_to_write = millis() + write_delay;
   }
 
@@ -177,12 +202,33 @@ void loop() {
   if (rp2040.fifo.pop_nb(&msg)) {
     msg_to_bytes(msg, b);
     if (b[3] == ICC_READ_DATA) {
-      uint16_t val = msg;
-      Serial.print("<<<<<< Received ");
-      print_message(counterRx++, id_list[0], b[2], val);
 
-      //Update the list of known ids
-      id_list[find(id_list, b[2])] = b[2];
+      //Print the message received
+      Serial.print("<<<<<< Received: ");
+      print_message(b[0], b[1], id_list[0], b[2]);
+
+      //If I received a I am alive message
+      if(char(b[0]) == 'i' && char(b[1]) == 'a')
+      {
+        //Update the list of known ids
+        id_list[find(id_list, b[2])] = b[2];
+      }
+
+      //If i receive a reset message
+      if(char(b[0]) == 'R')
+      {
+        //Set calibrated to off, we are in reset mode (PID control is off)
+        calibrated = false;
+      }
+
+      //If message is for me 
+      if(b[2] == id_list[0]){
+        //Someone is ordering me to set my duty cycle
+        if (char(b[0]) == 'd'){
+          analogWrite(LED_PIN, int(b[1]));
+        }
+      }
+
       //Temporary print id_list
       Serial.print("\nIds I am aware: ");
       for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
@@ -190,6 +236,7 @@ void loop() {
         Serial.print(" ");
       }
       Serial.println("");
+    
     } else if (b[3] == ICC_ERROR_DATA) {
       //print_can_errors(b[1],b[0]);
       if (b[0] & 0b11111000) {  //RX0OV | RX1OV | TXBO | TXEP | RXEP
@@ -206,8 +253,8 @@ void loop() {
     }
   }
 
-  //Check for new sampling time
-  if (timer_fired) {
+  //Check for new sampling time and if the system is calibrated 
+  if (timer_fired && calibrated) {
 
     //Check time
     delta_control = -micros();
@@ -290,5 +337,60 @@ void loop1() {
   }
 }
 
+//Function to turn off the LED of all of the picos, including me
+void turn_off_every(uint8_t b[]){
+  analogWrite(LED_PIN, int(0)); //turn off my led
+  //Loop through each know pico and tell them to turn off their led
+  for (int i = 1; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
+    if(id_list[i] != 0){
+      b[3] = ICC_WRITE_DATA;  // Identifier
+      //The message: set (d)uty cycle to zero
+      b[2] = id_list[i];
+      b[0] = int('d'); //Convert the character to corresponding ascii value
+      b[1] = 0;
+      rp2040.fifo.push(bytes_to_msg(b));
+      
+      delay(write_delay);//Delay to make sure messages are sent with no errors
+    }
+  }
+}
+
+//Function to turn off the LED of all of the picos except one
+void turn_off_except(uint8_t b[], uint8_t id){
+  analogWrite(LED_PIN, int(0)); //turn off my led
+  //Loop through each know pico and tell them to turn off their led
+  for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
+    if(id_list[i] != 0){
+
+      //If the id to turn on is my id, i turn me on
+      if(id_list[i] == id && i == 0){
+        analogWrite(LED_PIN, int(DAC_RANGE)); //turn on my led
+      }
+
+      //If the id is other than my id
+      //Send message to turn that id on
+      else if(id_list[i] == id && i != 0){
+        b[3] = ICC_WRITE_DATA;  // Identifier
+        //The message: set (d)uty cycle to zero
+        b[2] = id_list[i];
+        b[0] = int('d'); //Convert the character to corresponding ascii value
+        b[1] = DAC_RANGE;
+        rp2040.fifo.push(bytes_to_msg(b));
+      }
+
+      //Else send message to turn off
+      else{ 
+        b[3] = ICC_WRITE_DATA;  // Identifier
+        //The message: set (d)uty cycle to zero
+        b[2] = id_list[i];
+        b[0] = int('d'); //Convert the character to corresponding ascii value
+        b[1] = 0;
+        rp2040.fifo.push(bytes_to_msg(b));
+      }
+      
+      delay(write_delay);//Delay to make sure messages are sent with no errors
+    }
+  }
+}
 
 //*************End of code***************
