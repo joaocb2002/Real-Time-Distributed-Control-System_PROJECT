@@ -54,11 +54,9 @@ void calibrate_system();
 bool my_repeating_control_callback(struct repeating_timer *t);
 float analog_low_pass_filter();
 void read_interrupt(uint gpio, uint32_t events);
+void calibration_Hub_Node();
+void calibration_Other_Node();
 void reset_system();
-void turn_off_except(uint8_t id);
-void send_message(uint8_t id, uint8_t first_byte, uint8_t second_byte);
-void send_message_every(uint8_t first_byte, uint8_t second_byte);
-
 
 
 //*************Objects**************
@@ -94,7 +92,7 @@ void setup() {
 
   /*****************************************/
   //Calibrate open loop gain G
-  lum.calibrate_open_loop_gain_G();
+  lum.set_G(0.50); //Initial value for G
 
   //Compute H and tau, according to the new LUX reference (x_ref)
   lum.compute_open_loop_gain_H(x_ref);
@@ -108,8 +106,6 @@ void setup() {
 
   //Compute inicial reference value in voltage
   r = lum.voltage_func(x_ref);
-
-  /**************************************/
 }
 
 //**************Setup 1*******************

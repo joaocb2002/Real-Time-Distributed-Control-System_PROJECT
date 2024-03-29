@@ -101,33 +101,6 @@ class CLuminaire {
 
         //**** System parameters ****
 
-        // Open loop gain G computation, pass true to calibrate
-        void calibrate_open_loop_gain_G(){
-
-            // Variables 
-            int adc;
-            double LUX0, LUX1;
-
-            // Set LED PWM to 20% duty cycle, delay to stabilize, read ADC and compute LUX
-            analogWrite(LED_PIN, 819); // 20% of 4095
-            delay(5000); // 5s
-            adc = analogRead(A1);
-            LUX0 = lux_func(adc);
-
-            // Set LED PWM to 100% duty cycle, delay to stabilize, read ADC and compute LUX
-            analogWrite(LED_PIN, 4095); // 100% of 4095
-            delay(5000);
-            adc = analogRead(A1);
-            LUX1 = lux_func(adc);
-
-            // Compute slope (gain)
-            double gain = (LUX1 - LUX0) / (100 - 20);
-
-            // Update gain G
-            G = gain;
-        
-        }
-
         void compute_open_loop_gain_H(double LUX){ // Sensor subsystem gain H computation
 
             // Compute gain H, based on the reference LUX value
