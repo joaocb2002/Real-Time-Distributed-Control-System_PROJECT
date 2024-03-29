@@ -6,94 +6,103 @@
 class CLuminaire {
 
     private:
-        // Private member variables
+        // Basic private member variables
         char type; // Type of luminaire (A, B or C)
+        double m; // Slope of the voltage to LUX conversion function
+        double b; // Offset of the voltage to LUX conversion function
 
-        // Slope and offset of the voltage to LUX conversion function
-        double m; // Slope
-        double b; // Offset
-
-        // Metrics since last reset
-        float total_energy_consumption = 0; // Energy consumption since last reset (in Joules)
-        float last_duty_cycle, last_last_duty_cycle; // Last and last last duty cycle values
-        int N = 0; // Number of samples since last reset
-
-        // Occupancy status
+        // Specific private member variables
         bool occupied = false; // True if the luminaire is occupied, false otherwise
-
-    
-    public:
-        float total_visibility_error = 0; // Visibility error since last reset (in LUX)
-        float total_flicker = 0; // Flicker since last reset (in %)
-
-        //Get unique board ID
-        int len = 17;
-        char id[17];
-
-        // Public member variables
         double G; // Open loop gain of LED subsystem
         double H; // Open loop gain of sensor subsystem (computed every iteration because depends on LUX value)
         double tau; // Time constant of sensor subsystem (computed every iteration because depends on LUX value)
 
-        // Constructor
+        // Metrics since last reset - these are updated every time a new sample is stored
+        float total_energy_consumption = 0; // Energy consumption since last reset (in Joules)
+        float total_visibility_error = 0; // Visibility error since last reset (in LUX)
+        float total_flicker = 0; // Flicker since last reset (in %)
+
+        // Auxiliary variables for metrics computation
+        float last_duty_cycle, last_last_duty_cycle; // Last and last last duty cycle values
+        int N = 0; // Number of samples since last reset
+
+        // Last minute buffer - 
+        float last_minute_energy[6000] = {0}; // Energy consumption in the last minute (in Joules)
+        float last_minute_visibility_error[6000] = {0}; // Visibility error in the last minute (in LUX)
+        float last_minute_flicker[6000] = {0}; // Flicker in the last minute (in %)
+
+    
+    public:
+
+        // Public member variables
+
+        // Constructor 
         CLuminaire(){}
 
         // Destructor
         ~CLuminaire(){}
 
-        // Initialize luminaire
+        // **** Initialize luminaire with right parameters (m, b, type) using its unique ID ****
         void init_lum(char* id, int len){
 
             // Set m and b according to the luminaire type
             if (strcmp(id, LUM_A_ID) == 0){
                 m = mA;
                 b = bA;
-                G = GA;
                 type = 'A';
             }
             else if (strcmp(id, LUM_B_ID) == 0){
                 m = mB;
                 b = bB;
-                G = GB;
                 type = 'B';
             }
             else if (strcmp(id, LUM_C_ID) == 0){
                 m = mC;
                 b = bC;
-                G = GC;
                 type = 'C';
             }
             else{ //Type A on default
                 m = mA;
                 b = bA;
-                G = GA;
                 type = 'X'; //shows erros
             }
         }
 
-        // Get luminaire type
-        char get_type(){
-            return(type);
-        }
+        // **** Getters ****
+        char get_type(){return(type);}// Get luminaire type
+        double get_m(){return(m);}// Get slope of the voltage to LUX conversion function
+        double get_b(){return(b);}// Get offset of the voltage to LUX conversion function
+        double get_G(){return(G);}// Get open loop gain of LED subsystem
+        double get_H(){return(H);}// Get open loop gain of sensor subsystem
+        double get_tau(){return(tau);}// Get time constant of sensor subsystem
+        bool get_occupancy(){return(occupied);} // Get occupancy status
+        float get_total_energy_consumption(){return(total_energy_consumption);} //Get total energy consumption
+        float get_total_visibility_error(){return(total_visibility_error/N);} //Get total visibility error
+        float get_total_flicker(){return(total_flicker/N);} //Get total flicker
 
-        // Voltage (from 0-4095) to LUX conversion
-        double lux_func(int adc){
+        // **** Setters ****
+        void set_occupancy(bool occ){occupied = occ;} // Set occupancy status
+        void set_G(double G_val){G = G_val;} // Set open loop gain of LED subsystem
+
+        //**** LUX-voltage conversion functions ****
+        double lux_func(int adc){ // Voltage (from 0-4095) to LUX conversion
             double Vi = (double)adc * 3.3 / 4096;
             double res = 33000 / Vi - 10000;
             double LUX = pow(10, (log10(res) - b) / m);
             return(LUX); 
         }
 
-        // LUX to voltage (from 0-4095) conversion
-        double voltage_func(double LUX){
+        double voltage_func(double LUX){ // Voltage (from 0-4095) to LUX conversion
             double val = pow(10, (log10(LUX) * m + b));
             double Vi = 33000 / (10000+val);
             Vi = Vi * 4096 / 3.3;
             return(Vi);
         }
 
+        //**** System parameters ****
+
         // Open loop gain G computation, pass true to calibrate
-        double calibrate_open_loop_gain_G(){
+        void calibrate_open_loop_gain_G(){
 
             // Variables 
             int adc;
@@ -113,44 +122,36 @@ class CLuminaire {
 
             // Compute slope (gain)
             double gain = (LUX1 - LUX0) / (100 - 20);
-            return(gain);
+
+            // Update gain G
+            G = gain;
+        
         }
 
-        // Sensor subsystem gain H computation
-        double compute_open_loop_gain_H(double LUX){
+        void compute_open_loop_gain_H(double LUX){ // Sensor subsystem gain H computation
 
             // Compute gain H, based on the reference LUX value
             double val = pow(10, (log10(LUX) * m + b));
             double gain = 33000 / (LUX * (10000+val));
 
-            // Return gain H
-            return(gain);
+            // Update gain H
+            H = gain;
         }
 
-        // Sensor subsystem time constant tau computation
-        double compute_compute_tau_time_const(double LUX){
+        void compute_tau_time_const(double LUX){ // Sensor subsystem time constant tau computation
 
             // Compute time constant tau, based on the reference LUX value
             double val = pow(10, (log10(LUX) * m + b));
-            double tau = val / (10*(pow(10, 4)+val));
-            tau += 0.070; // Add 70ms to adjust (based on experimental data)
+            val = val / (10*(pow(10, 4)+val));
+            val += 0.070; // Add 70ms to adjust (based on experimental data)
 
-            // Return time constant tau
-            return(tau);
+            // Update constant tau
+            tau = val;
         }
 
-        // Get occupancy status
-        bool get_occupancy(){
-            return(occupied);
-        }
-
-        // Occupancy status update
-        void update_occupancy(bool occ){
-            occupied = occ;
-        }
-
-        // Store last sample data and update metrics
-        void store_luminaire_data(float duty_cycle, float lux, float rlux){
+        
+        //**** Metrics computation ****
+        void update_luminaire_metrics(float duty_cycle, float lux, float reference_lux){  // Store last sample data and update metrics
 
             // Compute flicker for that sample
             float flicker = 0;
@@ -162,31 +163,32 @@ class CLuminaire {
             last_last_duty_cycle = last_duty_cycle;
             last_duty_cycle = duty_cycle;
 
-            // Update metrics
-            total_energy_consumption += PMAX*duty_cycle/100*TIME_SAMPLING; // in Joules
-            total_visibility_error += max(0, rlux - lux); // in LUX
-            total_flicker += flicker; // in s^-1
+            // Compute visibility error for that sample
+            float visibility_error = max(0, reference_lux - lux);
+
+            // Compute energy consumption for that sample
+            float energy_consumption = PMAX*duty_cycle/100*TIME_SAMPLING; // in Joules
+
+            // Update metrics since last reset
+            total_energy_consumption += energy_consumption;
+            total_visibility_error += visibility_error;
+            total_flicker += flicker;
+
+            // Update last minute buffer
+            last_minute_energy[N % 6000] = energy_consumption; // in Joules
+            last_minute_visibility_error[N % 6000] = visibility_error; // in LUX
+            last_minute_flicker[N % 6000] = flicker; // in s^-1
 
             // Update sample number
             N++;
         }
 
-        //Get total energy consumption
-        float get_total_energy_consumption(){
-            return(total_energy_consumption);
+        void reset_metrics(){ // Reset metrics
+            total_energy_consumption = 0;
+            total_visibility_error = 0;
+            total_flicker = 0;
+            N = 0;
         }
-
-        //Get total visibility error
-        float get_total_visibility_error(){
-            return(total_visibility_error/N);
-        }
-
-        //Get total flicker
-        float get_total_flicker(){
-            return(total_flicker/N);
-        }
-        
-
 };
 
 #endif // LUMINAIRE_HH

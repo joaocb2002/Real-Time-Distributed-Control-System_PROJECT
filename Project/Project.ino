@@ -7,27 +7,27 @@
 #include "can.h"
 #include <hardware/flash.h>
 #include <hardware/gpio.h>
-#include "utils.h"
+#include "utils.hh"
 
 
 //*************Global Variables**************
-float x_ref = 50.0;               //Reference value in LUX (default = 50)
+float x_ref = 50.0;               // Reference value in LUX (default = 50)
 float r;                          // Reference value in voltage - obtained from x_ref
 float y;                          // Measured value in voltage (0-4095) - obvained from converting x to voltage
 float u;                          // Control signal in PWM (0-4095) - applied in the actuator
+float o;                          // External illuminance (to be measured...)
 unsigned long int delta_control;  // Timer variables
-volatile bool timer_fired{ false };
-struct repeating_timer timer;
-time_t initial_time = millis();
+volatile bool control_flag{ false }; // Timer flag for control loop
+struct repeating_timer timer;     // Timer for control loop
+time_t initial_time = millis();   // Initial time measurement
 
+//************* HUB Node **************
+bool hub = false; //Flag to hold if this pico is the hub node
+uint8_t hub_id = 0; //Id of the hub node
 
 //*************CAN BUS**************
 uint8_t pico_flash_id[8];
-struct can_frame canMsgTx, canMsgRx;
-unsigned long counterTx{ 0 }, counterRx{ 0 };
 MCP2515::ERROR err;
-unsigned long time_to_write = millis();
-unsigned long write_delay{ 1000 };
 const byte interruptPin{ 20 };
 volatile byte data_available{ false };
 uint8_t canintf_save{ 0 };
@@ -36,28 +36,413 @@ bool detected_errors{ false };
 
 MCP2515 can0{ spi0, 17, 19, 16, 18, 10000000 };  // CS, INT, SCK, MISO, MOSI
 
-//*************Calibration stuff**************
-//Maxium number of picos possible
-const uint8_t N = 8;
-//List to hold the ids of the other picos
-uint8_t id_list[N] = {};
-//NxN matrix to hold the values of the cross coupling gains
-uint8_t Gains[N][N] = {};
-//o is the external illumination I measure, I do not care about other
-uint8_t o = 0; 
-//flag to hold status of calibration.
-bool calibrated = false;
-//flag to hold if there is a message to be sent 
-bool message = false;
+//*************Inter-core communication**************
+QueueHandle_t xQueue_01 = xQueueCreate(10, sizeof(icc_msg)); //FreeRTOS queue to store messages to be sent from core 0 to core 1
+QueueHandle_t xQueue_10 = xQueueCreate(10, sizeof(icc_msg)); //FreeRTOS queue to store messages to be sent from core 1 to core 0
 
-//*************Functions**************
-bool my_repeating_timer_callback(struct repeating_timer *t) {
-  if (!timer_fired)
-    timer_fired = true;
+
+//*************Calibration **************
+uint8_t num_luminaires = 1; //Number of luminaires in the system (including me)
+uint8_t pico_id_list[MAX_LUMINAIRES] = {}; //List to hold the ids of the other picos
+float luminaire_gains[MAX_LUMINAIRES] = {}; //NxN matrix to hold the values of the cross coupling gains
+bool calibrated = false; //flag to hold status of calibration of this pico 
+bool message = false; //flag to hold if there is a message to be sent
+
+//******** Function prototypes *****
+void wait4start();
+void calibrate_system();
+bool my_repeating_control_callback(struct repeating_timer *t);
+float analog_low_pass_filter();
+void read_interrupt(uint gpio, uint32_t events);
+void reset_system();
+void turn_off_except(uint8_t id);
+void send_message(uint8_t id, uint8_t first_byte, uint8_t second_byte);
+void send_message_every(uint8_t first_byte, uint8_t second_byte);
+
+
+
+//*************Objects**************
+CLuminaire lum;                                 //Luminaire object
+CPID my_pid(TIME_SAMPLING, 1, 1, 1, 0, 1, 10);  //Sampling time = 10ms, K = 1, b = 1, Ti = 1, Td = 0, Tt = 1, N = 10
+
+
+//*****************Setup 0****************
+void setup() {
+
+  //Get unique flash and node address - flash calls are unsafe if two cores are operating
+  rp2040.idleOtherCore();
+  flash_get_unique_id(pico_flash_id); //Get unique flash id
+  pico_id_list[0] = pico_flash_id[6]; // Store my id in the first position of list of known ids
+  rp2040.resumeOtherCore();
+
+  //Setup serial communication and IO pins
+  Serial.begin(SERIAL_BAUD);
+  analogReadResolution(ADC_RESOLUTION);  //2^12 bits = 4095
+  analogWriteFreq(PWM_FREQ);             //PWM frequency = 60kHz
+  analogWriteRange(DAC_RANGE);           //PWM range = 4095
+
+  //Setup timer for sampling time
+  add_repeating_timer_ms(-10, my_repeating_control_callback, NULL, &timer);  //10ms period
+
+  //Get unique board ID - used to identify the luminaire (this is kind of redundant, but it was used in Part 1)
+  char pico_string_id[LUM_ID_SIZE];
+  pico_get_unique_board_id_string(pico_string_id, LUM_ID_SIZE);
+
+  //Initialize luminaire object, according to board type
+  lum.init_lum(pico_string_id, LUM_ID_SIZE);
+
+
+  /*****************************************/
+  //Calibrate open loop gain G
+  lum.calibrate_open_loop_gain_G();
+
+  //Compute H and tau, according to the new LUX reference (x_ref)
+  lum.compute_open_loop_gain_H(x_ref);
+  lum.compute_tau_time_const(x_ref);
+
+  // Update control system parameters, according to the new parameters values
+  my_pid.update_parameters(lum.get_G(), lum.get_H(), lum.get_tau());
+
+  //Compute coefficients
+  my_pid.compute_coefficients();
+
+  //Compute inicial reference value in voltage
+  r = lum.voltage_func(x_ref);
+
+  /**************************************/
+}
+
+//**************Setup 1*******************
+void setup1() {
+  //Initialize CAN bus
+  can0.reset();
+  can0.setBitrate(CAN_1000KBPS);
+  can0.setNormalMode();
+  gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
+}
+
+//*************Main Loop (Core Zero)*********************
+void loop() {
+
+  //Variables for CAN communication
+  can_frame frm;
+  uint32_t msg;
+
+  //Check if already calibrated - if not, wait for the system start message and calibrate the system
+  if(!calibrated){
+    wait4start();
+    calibrate_system();
+    lum.set_G(luminaire_gains[0]);
+    calibrated = true;
+  }
+
+  //Check for user input (TO DO: MAKE THIS SHIT BETTER)
+  uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
+  if (reset == 2){
+    reset_system();
+  }
+
+  //Control computation
+  if (control_flag && calibrated) {
+
+    //Check time
+    delta_control = -micros();
+
+    //Read analog input value
+    y = analog_low_pass_filter();
+
+    //Compute H and tau, according to the new LUX reference (x_ref)
+    lum.compute_open_loop_gain_H(x_ref);
+    lum.compute_tau_time_const(x_ref);
+
+    // Update control system parameters, according to the new parameters values
+    my_pid.update_parameters(lum.get_G(), lum.get_H(), lum.get_tau());
+
+    //Compute coefficients
+    my_pid.compute_coefficients();
+
+    //Compute reference value in voltage
+    r = lum.voltage_func(x_ref);
+
+    //Compute control signal (in PWM from 0 to 4095)
+    u = my_pid.compute_control(r, y);
+
+    //Write analog output
+    analogWrite(LED_PIN, int(u));
+
+    //Housekeeping
+    my_pid.housekeeping(r, y);
+
+    // Store last minute data (PWM stored in percentage, r in LUX and y in volts)
+    lum.update_luminaire_metrics(u / DAC_RANGE * 100, lum.lux_func(y), x_ref);
+
+    //Reset timer
+    control_flag = false;
+
+    //Check time elapsed for control - if it is greater than the sampling time, print a warning
+    if ((delta_control + micros()) > TIME_SAMPLING * 1000000) {
+      Serial.println("Sampling time exceeded! Check control loop!");
+    }
+  }
+}
+
+//*************Main Loop (Core One)*********************
+void loop1() {
+  //Variables for CAN communication
+  can_frame frm;
+  icc_msg msg;
+
+  //INCOMING DATA IN CAN BUS
+  if (data_available) {
+
+    //Read the message from available buffers and send it to core 0 (with ICC_READ_DATA flag)
+    uint8_t irq = can0.getInterrupts();
+    if (irq & MCP2515::CANINTF_RX0IF) { 
+      can0.readMessage(MCP2515::RXB0, &frm); 
+      msg.frm = frm;
+      msg.cmd = ICC_READ_DATA;
+      xQueueSendToBack(xQueue_10, &msg);
+    }
+    if (irq & MCP2515::CANINTF_RX1IF) { 
+      can0.readMessage(MCP2515::RXB1, &frm); 
+      msg.frm = frm;
+      msg.cmd = ICC_READ_DATA;
+      xQueueSendToBack(xQueue_10, &msg);
+    }
+
+    //Reset the flag
+    data_available = false;
+  }
+
+  //OUTGOING DATA IN CAN BUS
+  if (xQueueReceive(xQueue_01, &msg, 0) == pdTRUE) {
+    //Check the command
+    if (msg.cmd == ICC_WRITE_DATA) {
+      //Write the message to the CAN bus
+      can0.sendMessage(&msg.frm);
+    }
+  }
+}
+
+
+
+
+/////////////////////////////////////////////////////
+//          FUNCTIONS DEFINITIONS
+/////////////////////////////////////////////////////
+
+
+//************** Important System Functions **************
+
+void wait4start(){ //Function to wait for the system start message
+
+  /* The luminaire will wait and send a initial message ("Hello!")
+  through the CAN BUS periodically for other picos to detect it and acknowledge it. 
+  This process will only stop if a start message is received through serial port
+  (which will mean that this luminaire is the Hub Luminaire) or if other
+  luminaire sends that same message.*/
+
+  // Initialize variables 
+  icc_msg msg;
+  can_frame frm; 
+  uint8_t src_id, dest_id, num;
+  char b[CAN_MSG_SIZE];
+
+  while (1)
+  {
+    // Create the message to be sent: "Hello!"
+    msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, "Hello!", sizeof("Hello!"));
+
+    // Send the message through the xQueue01
+    msg.frm = frm;
+    msg.cmd = ICC_WRITE_DATA;
+    xQueueSendToBack(xQueue_01, &msg);
+
+    //Check for incoming data in xQueue10
+    if (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+      if (msg.cmd == ICC_READ_DATA) { //Check the command
+        if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) { //Check if the message is for me
+          //Extract the message
+          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
+          //Check if the message is a Hello message
+          if (strcmp(b, "Hello!") == 0) {
+            pico_id_list[find(pico_id_list, msg.frm.can_id)] = msg.frm.can_id; //Add the id to the list of known ids
+            num_luminaires++; //Increment the number of luminaires
+          }
+          else if (strcmp(b, "Str Cal") == 0) { //Check if the message is a start calibration message
+            break;
+          }
+        }
+      }
+    }
+
+    //Check for incoming data in serial port
+    if (Serial.available()) {
+      if (Serial.readStringUntil('\n') == "Start") {
+        hub = true;
+        hub_id = pico_id_list[0];
+        break;
+      }
+    }
+
+    // Delay 0.5s to avoid overflow
+    delay(500);
+  }
+}
+
+void calibrate_system(){ //Function to calibrate the system cross coupling gains
+
+  /* The calibration process is coordinated by the hub function node.
+  So, all the nodes will obey to received commands, until calibration
+  process is over*/
+
+  if (hub) {
+    // Give orders
+    calibration_Hub_Node();
+  }
+  else{
+    //Wait for orders
+    calibration_Other_Node();
+  }
+}
+
+void reset_system(){ //Function to reset the whole system (hub node receives order from user and coordinates the reset)
+  //Tell other picos i am entering reset/calibration mode
+  send_message_every(int('R'),0);
+
+  //Turn off my led and all the other LEDs
+  analogWrite(LED_PIN, int(0)); //turn off my led
+  send_message_every(int('d'),0);
+
+  delay(1000); //Wait some time for steady state
+  //Measure my external illuminance
+  o = lum.lux_func(analog_low_pass_filter());
+  Serial.println(o);
+  //Send message to other picos ordering them to measure their external illuminance
+  //TO_DO
+
+  //Iterate over each one of the picos
+  //At each iteration, turn one led on and measure stuff
+  for (int i = 0; i < sizeof(pico_id_list) / sizeof(pico_id_list[0]); i++) {
+    if(pico_id_list[i] != 0){
+      turn_off_except(pico_id_list[i]);
+      //Measure gains
+      //Send message to other picos, telling them to measure gains
+      //TO_DO
+    }
+  }
+
+  calibrated = true;
+  //Tell other picos calibration is done
+  send_message_every(int('R'),1);
+}
+
+void calibration_Hub_Node(){ //Function to calibrate the system cross coupling gains (hub node)
+
+  // Initialize variables
+  icc_msg msg;
+  can_frame frm;
+
+  // Send message to all the picos to start calibration
+  msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, "Str Cal", sizeof("Str Cal"));
+  msg.frm = frm;
+  msg.cmd = ICC_WRITE_DATA;
+  xQueueSendToBack(xQueue_01, &msg);
+
+  //Turn off every led (the other who receives the message will also turn off their led)
+  analogWrite(LED_PIN, int(0)); //turn off my led
+  delay(3000); //Wait some time for steady state
+
+  // Register the external illuminance
+  o = lum.lux_func(analog_low_pass_filter());
+
+  //Send message to other picos ordering them to measure their external illuminance
+  //TO_DO
+
+  //Iterate over each one of the picos, turning one led on at a time and measuring gains
+  for (int i = 0; i < num_luminaires; i++) {
+    if(i == 0){ 
+      analogWrite(LED_PIN, int(DAC_RANGE)); //turn on my led
+    }
+
+    //Create message: "Calibrate <id>"
+    char b[CAN_MSG_SIZE]; strcat(b, "Cal "); strcat(b, pico_id_list[i]);
+
+    // Send message to warn other picos to measure gains (and the corresponding one to turn on its own led)
+    msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
+
+    //Measure gains
+    delay(1500); 
+    luminaire_gains[i] = lum.lux_func(analog_low_pass_filter())/100;
+    delay(1500); 
+    
+    //Turn off my led
+    analogWrite(LED_PIN, int(0)); //turn off my led
+  }
+
+  //Tell other picos calibration is done
+  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, "End Cal", sizeof("End Cal"));
+  msg.frm = frm;
+  msg.cmd = ICC_WRITE_DATA;
+  xQueueSendToBack(xQueue_01, &msg);
+}
+
+void calibration_Other_Node(){ //Function to calibrate the system cross coupling gains (other nodes)
+
+  //Wait for orders
+  while (1)
+  {
+    //Check for incoming data in xQueue10
+    icc_msg msg;
+    if (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+      if (msg.cmd == ICC_READ_DATA) { //Check the command
+        if (msg.frm.data[0] == CAN_ID_BROADCAST) { //Check if the message is for me (or everyone)
+          //Extract the message
+          uint8_t src_id, dest_id, num, node_id;
+          char b[CAN_MSG_SIZE];
+          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
+
+          //Check if the message is to end calibration
+          if (strcmp(b, "End Cal") == 0) {
+            break;
+          }
+
+          //Check if the message is to do calibration (starts with Cal)
+          if (strcmp(b[0], "C") == 0) {
+
+            node_id = b[4]; // Check what is the id to turn on
+
+            // Check the position of the id in the list
+            int pos = find(pico_id_list, node_id);
+
+            // Turn on my led, if it is my turn
+            if (pos == 0) {
+              analogWrite(LED_PIN, int(DAC_RANGE)); //turn on my led
+            }
+
+            // Introduce some delay and measure gains
+            delay(1500);
+            luminaire_gains[pos] = lum.lux_func(analog_low_pass_filter())/100;
+            delay(1500);
+
+            // Turn off my led
+            analogWrite(LED_PIN, int(0)); //turn off my led
+          }
+        }
+      }
+    }
+  }
+}
+
+//************** Timers, interrupts and callbacks functions **************
+
+bool my_repeating_control_callback(struct repeating_timer *t) { //Function to set control flag to true
+  if (!control_flag)
+    control_flag = true;
   return true;
 }
 
-float analog_low_pass_filter() {
+float analog_low_pass_filter() { //Function to read the analog input value and apply a low pass filter
   // Declare an array of floats
   static float arr[AVGR_FILTER_SAMPLE_NUM] = { 0.0 };
 
@@ -82,334 +467,9 @@ float analog_low_pass_filter() {
   return arr[i];
 }
 
-void read_interrupt(uint gpio, uint32_t events) {
+void read_interrupt(uint gpio, uint32_t events) { //Function to detect interrupt for CAN bus (data available)
   data_available = true;
 }
 
 
-//*************Objects**************
-CLuminaire lum;                                 //Luminaire object
-CPID my_pid(TIME_SAMPLING, 1, 1, 1, 0, 1, 10);  //Sampling time = 10ms, K = 1, b = 1, Ti = 1, Td = 0, Tt = 1, N = 10
-
-//*****************Setup****************
-// The setup for the main core
-void setup() {
-  //Get unique flash and node address
-  rp2040.idleOtherCore();
-  //flash calls are unsafe if two cores are operating
-  flash_get_unique_id(pico_flash_id);
-  id_list[0] = pico_flash_id[6];
-  rp2040.resumeOtherCore();
-
-  //Setup serial communication and IO pins
-  Serial.begin(SERIAL_BAUD);
-  analogReadResolution(ADC_RESOLUTION);  //2^12 bits = 4095
-  analogWriteFreq(PWM_FREQ);             //PWM frequency = 60kHz
-  analogWriteRange(DAC_RANGE);           //PWM range = 4095
-
-  //Setup timer for sampling time
-  add_repeating_timer_ms(-10, my_repeating_timer_callback, NULL, &timer);  //10ms period
-
-  //Get unique board ID
-  int len = 2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1;
-  char id[len];
-  pico_get_unique_board_id_string(id, len);
-
-  //Initialize luminaire object, according to board type
-  lum.init_lum(id, len);
-
-  //Calibrate open loop gain G
-  lum.G = lum.calibrate_open_loop_gain_G();
-
-  //Compute H and tau, according to the new LUX reference (x_ref)
-  lum.H = lum.compute_open_loop_gain_H(x_ref);
-  lum.tau = lum.compute_compute_tau_time_const(x_ref);
-
-  // Update control system parameters, according to the new parameters values
-  my_pid.update_parameters(lum.G, lum.H, lum.tau);
-
-  //Compute coefficients
-  my_pid.compute_coefficients();
-
-  //Compute inicial reference value in voltage
-  r = lum.voltage_func(x_ref);
-}
-
-// The setup for the core dedicated to the can bus
-void setup1() {
-  //Initialize CAN bus
-  can0.reset();
-  can0.setBitrate(CAN_1000KBPS);
-  can0.setNormalMode();
-  gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
-  time_to_write = millis() + write_delay;
-}
-
-//*************Main Loop*********************
-void loop() {
-
-  can_frame frm;
-  uint32_t msg;
-  uint8_t b[4];
-
-  //Check for user input
-  uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
-
-  if (reset == 2){
-    reset_func();
-  }
-
-  //If pico is NOT yet calibrated, send the I am alive message
-  if(!calibrated){
-    message = true;
-    //The message: (i)m (a)live
-    b[2] = id_list[0];
-    b[0] = int('i'); //Convert the character to corresponding ascii value
-    b[1] = int('a');
-  }
-
-  //If it is time to send message, send message to other core
-  //Conditions: there must be a message to be sent AND there is a minimum time between messages to avoid overflow
-  if (message && millis() >= time_to_write) {
-    message = false;
-    b[3] = ICC_WRITE_DATA;  // Identifier
-    //b[2] = id_list[0];      // Which id is sending the msg? 0 index corresponds to me
-    //b[0] = counterTx;
-    //b[1] = (counterTx >> 8);
-    rp2040.fifo.push(bytes_to_msg(b));
-
-    Serial.print(">>>>>> Sending ");
-    print_message(b[0], b[1], b[2], b[2]);
-    //counterTx++;
-    time_to_write = millis() + write_delay;
-  }
-
-  //check incoming data in fifo queue
-  if (rp2040.fifo.pop_nb(&msg)) {
-    msg_to_bytes(msg, b);
-    if (b[3] == ICC_READ_DATA) {
-
-      //Print the message received
-      Serial.print("<<<<<< Received: ");
-      print_message(b[0], b[1], id_list[0], b[2]);
-
-      //If I received a I am alive message
-      if(char(b[0]) == 'i' && char(b[1]) == 'a')
-      {
-        //Update the list of known ids
-        id_list[find(id_list, b[2])] = b[2];
-      }
-
-      //If i receive a reset message
-      if(char(b[0]) == 'R')
-      {
-        if (b[1] == 0){
-          //Set calibrated to off, we are in reset mode (PID control is off)
-          calibrated = false;
-        }
-        else if(b[1] == 1){
-          calibrated = true;
-        }
-      }
-
-      //If message is for me 
-      if(b[2] == id_list[0]){
-        //Someone is ordering me to set my duty cycle
-        if (char(b[0]) == 'd'){
-          analogWrite(LED_PIN, int(float(b[1]/100*DAC_RANGE)));
-        }
-      }
-
-      //Temporary print id_list
-      Serial.print("\nIds I am aware: ");
-      for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
-        Serial.print(id_list[i]);
-        Serial.print(" ");
-      }
-      Serial.println("");
-    
-    } else if (b[3] == ICC_ERROR_DATA) {
-      //print_can_errors(b[1],b[0]);
-      if (b[0] & 0b11111000) {  //RX0OV | RX1OV | TXBO | TXEP | RXEP
-        eflg_save = b[0];
-        canintf_save = b[1];
-        can0.clearRXnOVRFlags();
-        can0.clearInterrupts();
-        detected_errors = true;
-      }
-    }
-    if (detected_errors) {
-      Serial.println(" ***** Detected errors in past operations *****");
-      //print_can_errors(canintf_save, eflg_save);
-    }
-  }
-
-  //Check for new sampling time and if the system is calibrated 
-  if (timer_fired && calibrated) {
-
-    //Check time
-    delta_control = -micros();
-
-    //Read analog input value
-    y = analog_low_pass_filter();
-
-    //Compute H and tau, according to the new LUX reference (x_ref)
-    lum.H = lum.compute_open_loop_gain_H(x_ref);
-    lum.tau = lum.compute_compute_tau_time_const(x_ref);
-
-    // Update control system parameters, according to the new parameters values
-    my_pid.update_parameters(lum.G, lum.H, lum.tau);
-
-    //Compute coefficients
-    my_pid.compute_coefficients();
-
-    //Compute reference value in voltage
-    r = lum.voltage_func(x_ref);
-
-    //Compute control signal (in PWM from 0 to 4095)
-    u = my_pid.compute_control(r, y);
-
-    //Write analog output
-    analogWrite(LED_PIN, int(u));
-
-    //Housekeeping
-    my_pid.housekeeping(r, y);
-
-    // Store last minute data (PWM stored in percentage, r in LUX and y in volts)
-    lum.store_luminaire_data(u * 100 / 4095, lum.lux_func(y), x_ref);
-
-    //Reset timer
-    timer_fired = false;
-
-    //Check time elapsed for control - if it is greater than the sampling time, print a warning
-    if ((delta_control + micros()) > TIME_SAMPLING * 1000000) {
-      Serial.println("Sampling time exceeded! Check control loop!");
-    }
-  }
-}
-
-void loop1() {
-  can_frame frm;
-  uint32_t msg;
-  uint8_t b[4];
-
-  //reading the can-bus and writing the fifo
-  //if interrupt has happened (message received)
-  if (data_available) {
-    data_available = false;
-    uint8_t irq = can0.getInterrupts();
-    if (irq & MCP2515::CANINTF_RX0IF) {
-      can0.readMessage(MCP2515::RXB0, &frm);
-      //Push message to other core
-      rp2040.fifo.push_nb(can_frame_to_msg(&frm));
-    }
-    if (irq & MCP2515::CANINTF_RX1IF) {
-      can0.readMessage(MCP2515::RXB1, &frm);
-
-      rp2040.fifo.push_nb(can_frame_to_msg(&frm));
-    }
-    uint8_t err = can0.getErrorFlags();
-    rp2040.fifo.push_nb(error_flags_to_msg(irq, err));
-  }
-
-  //send message to the can bus
-  if (rp2040.fifo.pop_nb(&msg)) {
-    msg_to_bytes(msg, b);
-    if (b[3] == ICC_WRITE_DATA) {
-      frm.can_id = b[2];
-      frm.can_dlc = 2;
-      frm.data[1] = b[1];
-      frm.data[0] = b[0];
-      can0.sendMessage(&frm);
-    }
-    uint8_t irq = can0.getInterrupts();
-    uint8_t err = can0.getErrorFlags();
-    rp2040.fifo.push_nb(error_flags_to_msg(irq, err));
-  }
-}
-
-void reset_func(){
-  //Tell other picos i am entering reset/calibration mode
-  send_message_every(int('R'),0);
-
-  //Turn off my led and all the other LEDs
-  analogWrite(LED_PIN, int(0)); //turn off my led
-  send_message_every(int('d'),0);
-
-  delay(1000); //Wait some time for steady state
-  //Measure my external illuminance
-  o = lum.lux_func(analog_low_pass_filter());
-  Serial.println(o);
-  //Send message to other picos ordering them to measure their external illuminance
-  //TO_DO
-
-  //Iterate over each one of the picos
-  //At each iteration, turn one led on and measure stuff
-  for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
-    if(id_list[i] != 0){
-      turn_off_except(id_list[i]);
-      //Measure gains
-      //Send message to other picos, telling them to measure gains
-      //TO_DO
-    }
-  }
-
-  calibrated = true;
-  //Tell other picos calibration is done
-  send_message_every(int('R'),1);
-}
-
-//Function to turn off the LED of all of the picos except one
-void turn_off_except(uint8_t id){
-  analogWrite(LED_PIN, int(0)); //turn off my led
-  //Loop through each know pico and tell them to turn off their led
-  for (int i = 0; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
-    if(id_list[i] != 0){
-
-      //If the id to turn on is my id, i turn me on
-      if(id_list[i] == id && i == 0){
-        analogWrite(LED_PIN, int(DAC_RANGE)); //turn on my led
-      }
-
-      //If the id is other than my id
-      //Send message to turn that id on
-      else if(id_list[i] == id && i != 0){
-        //The message: set (d)uty cycle to max
-        //Max 8byte int is 255, so send the pwm from 0 to 100, where 100 is converted to DAC_RANGE
-        send_message(id_list[i],int('d'),100);
-      }
-
-      //Else send message to turn off
-      else{ 
-         //The message: set (d)uty cycle to zero
-        send_message(id_list[i],int('d'),0);
-      }
-      
-      delay(write_delay);//Delay to make sure messages are sent with no errors
-    }
-  }
-}
-
-//Function to format message and send to fifo queue
-void send_message(uint8_t id, uint8_t first_byte, uint8_t second_byte){
-    uint8_t b[4];
-    b[3] = ICC_WRITE_DATA;  // Identifier
-    b[2] = id;
-    b[0] = first_byte; 
-    b[1] = second_byte;
-    rp2040.fifo.push(bytes_to_msg(b));
-    Serial.print(">>>>>> Sending ");
-    print_message(b[0], b[1], b[2], b[2]);
-}
-
-//Function to send message to all the picos except me 
-void send_message_every(uint8_t first_byte, uint8_t second_byte){
-  //Loop through each know pico other than me
-  for (int i = 1; i < sizeof(id_list) / sizeof(id_list[0]); i++) {
-    if(id_list[i] != 0){
-      send_message(id_list[i],first_byte, second_byte);
-      delay(write_delay);//Delay to make sure messages are sent with no errors
-    }
-  }
-}
 //*************End of code***************
