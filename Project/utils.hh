@@ -1,5 +1,6 @@
 #ifndef UTILS_H
 #define UTILS_H
+#include "can.h"
 
 
 /////////////////////////////////////////////////////
@@ -59,7 +60,7 @@ void print_can_frame_msg(can_frame *frm, uint8_t num) {
 // Function to convert a message into a CAN frame
 void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_id, char *msg, int len) {
   // Set can_id to the source node ID and can_dlc to the number of bytes
-  frm->can_id = id;
+  frm->can_id = src_id;
   frm->can_dlc = num;
 
   // Set the first byte of data to the destination node ID

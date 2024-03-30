@@ -27,6 +27,8 @@ class CPID {
     bool get_anti_windup();
     void set_feedback(bool _feedback);
     bool get_feedback();
+    void set_feedforward(bool _feedforward);
+    bool get_feedforward();
     void update_parameters(double G, double H, double tau);
     void compute_coefficients();
     float compute_control(float r, float y);
@@ -88,9 +90,7 @@ float CPID::compute_control(float r, float y) {
         v = P+I+D; //Control signal without saturation
         u = saturate(v, ulow, uhigh); 
     } else if (!feedback && feedforward) { //Feedforward control
-        P = K*(b*r-y); //Proportional term
-        D = ad*D-bd*(y-y_old); //Derivative term
-        v = P+D; //Control signal without saturation
+        v = K*(b*r-y); //Control signal without saturation
         u = saturate(v, ulow, uhigh); 
     } else { //No control
         u = 0;

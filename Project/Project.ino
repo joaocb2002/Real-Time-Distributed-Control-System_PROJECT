@@ -8,6 +8,13 @@
 #include <hardware/flash.h>
 #include <hardware/gpio.h>
 #include "utils.hh"
+#include <FreeRTOS.h>
+#include <queue.h>
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include "hardware/gpio.h"
+#include <gpio.h>
+
 
 
 //*************Global Variables**************
@@ -197,13 +204,13 @@ void loop1() {
       can0.readMessage(MCP2515::RXB0, &frm); 
       msg.frm = frm;
       msg.cmd = ICC_READ_DATA;
-      xQueueSendToBack(xQueue_10, &msg);
-    }
+      xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
+
     if (irq & MCP2515::CANINTF_RX1IF) { 
       can0.readMessage(MCP2515::RXB1, &frm); 
       msg.frm = frm;
       msg.cmd = ICC_READ_DATA;
-      xQueueSendToBack(xQueue_10, &msg);
+      xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
     }
 
     //Reset the flag
@@ -218,6 +225,7 @@ void loop1() {
       can0.sendMessage(&msg.frm);
     }
   }
+}
 }
 
 
@@ -237,7 +245,7 @@ void wait4start(){ //Function to wait for the system start message
   This process will only stop if a start message is received through serial port
   (which will mean that this luminaire is the Hub Luminaire) or if other
   luminaire sends that same message.*/
-
+  
   // Initialize variables 
   icc_msg msg;
   can_frame frm; 
@@ -252,7 +260,7 @@ void wait4start(){ //Function to wait for the system start message
     // Send the message through the xQueue01
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
-    xQueueSendToBack(xQueue_01, &msg);
+    xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY);
 
     //Check for incoming data in xQueue10
     if (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
@@ -302,6 +310,7 @@ void calibrate_system(){ //Function to calibrate the system cross coupling gains
   }
 }
 
+//*************** TO DO
 void reset_system(){ //Function to reset the whole system (hub node receives order from user and coordinates the reset)
   //Tell other picos i am entering reset/calibration mode
   send_message_every(int('R'),0);
@@ -321,7 +330,7 @@ void reset_system(){ //Function to reset the whole system (hub node receives ord
   //At each iteration, turn one led on and measure stuff
   for (int i = 0; i < sizeof(pico_id_list) / sizeof(pico_id_list[0]); i++) {
     if(pico_id_list[i] != 0){
-      turn_off_except(pico_id_list[i]);
+      //turn_off_except(pico_id_list[i]);
       //Measure gains
       //Send message to other picos, telling them to measure gains
       //TO_DO
@@ -343,7 +352,7 @@ void calibration_Hub_Node(){ //Function to calibrate the system cross coupling g
   msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, "Str Cal", sizeof("Str Cal"));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  xQueueSendToBack(xQueue_01, &msg);
+  xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY);
 
   //Turn off every led (the other who receives the message will also turn off their led)
   analogWrite(LED_PIN, int(0)); //turn off my led
@@ -352,25 +361,23 @@ void calibration_Hub_Node(){ //Function to calibrate the system cross coupling g
   // Register the external illuminance
   o = lum.lux_func(analog_low_pass_filter());
 
-  //Send message to other picos ordering them to measure their external illuminance
-  //TO_DO
-
   //Iterate over each one of the picos, turning one led on at a time and measuring gains
   for (int i = 0; i < num_luminaires; i++) {
-    if(i == 0){ 
+    if (i == 0) {
       analogWrite(LED_PIN, int(DAC_RANGE)); //turn on my led
     }
 
     //Create message: "Calibrate <id>"
-    char b[CAN_MSG_SIZE]; strcat(b, "Cal "); strcat(b, pico_id_list[i]);
+    char b[CAN_MSG_SIZE];
+    sprintf(b, "Cal %d", pico_id_list[i]);
 
     // Send message to warn other picos to measure gains (and the corresponding one to turn on its own led)
     msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
 
     //Measure gains
-    delay(1500); 
-    luminaire_gains[i] = lum.lux_func(analog_low_pass_filter())/100;
-    delay(1500); 
+    delay(1500);
+    luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
+    delay(1500);
     
     //Turn off my led
     analogWrite(LED_PIN, int(0)); //turn off my led
@@ -380,10 +387,13 @@ void calibration_Hub_Node(){ //Function to calibrate the system cross coupling g
   msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, "End Cal", sizeof("End Cal"));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  xQueueSendToBack(xQueue_01, &msg);
+  xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY);
 }
 
 void calibration_Other_Node(){ //Function to calibrate the system cross coupling gains (other nodes)
+
+  //Turn off my led
+  analogWrite(LED_PIN, int(0)); //turn off my led
 
   //Wait for orders
   while (1)
@@ -404,7 +414,7 @@ void calibration_Other_Node(){ //Function to calibrate the system cross coupling
           }
 
           //Check if the message is to do calibration (starts with Cal)
-          if (strcmp(b[0], "C") == 0) {
+          if (b[0] == 'C' && b[1] == 'a' && b[2] == 'l') {
 
             node_id = b[4]; // Check what is the id to turn on
 

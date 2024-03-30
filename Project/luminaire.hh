@@ -26,7 +26,7 @@ class CLuminaire {
         float last_duty_cycle, last_last_duty_cycle; // Last and last last duty cycle values
         int N = 0; // Number of samples since last reset
 
-        // Last minute buffer - 
+        // Last minute buffer 
         float last_minute_energy[6000] = {0}; // Energy consumption in the last minute (in Joules)
         float last_minute_visibility_error[6000] = {0}; // Visibility error in the last minute (in LUX)
         float last_minute_flicker[6000] = {0}; // Flicker in the last minute (in %)

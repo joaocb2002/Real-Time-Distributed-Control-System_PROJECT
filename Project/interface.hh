@@ -25,7 +25,7 @@ int handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y, 
 	if (command.startsWith("d")) { // Set duty cycle directly
 		sscanf(command.c_str(), "d %c %f", &i, &duty_cycle);
 		if (i == lum.get_type()) {
-      x_ref = lum.G * duty_cycle;
+      x_ref = lum.get_G() * duty_cycle;
 		}
 		Serial.println("ack"); 
 	} else if (command.startsWith("g d")) { // Get duty cycle
@@ -62,7 +62,7 @@ int handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y, 
 	} else if (command.startsWith("o")) { // Set occupancy status
 		sscanf(command.c_str(), "o %c %d", &i, &occupancy);
 		if (i == lum.get_type()) {
-      lum.update_occupancy(occupancy);
+      lum.set_occupancy(occupancy);
     }
 		Serial.println("ack");
 	} else if (command.startsWith("g o")) { // Get occupancy status
