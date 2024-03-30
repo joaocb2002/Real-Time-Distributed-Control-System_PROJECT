@@ -69,9 +69,9 @@ void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_
   // Copy the message into the data array, filling the rest with '_'
   for (int i = 0; i < num; i++) {
     if (i < len) {
-      frm->data[i] = msg[i];
+      frm->data[i+1] = msg[i];
     } else {
-      frm->data[i] = '_';
+      frm->data[i+1] = '_';
     }
   }
 }
@@ -82,12 +82,9 @@ void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *de
   *src_id = frm->can_id;
   *num = frm->can_dlc;
   *dest_id = frm->data[0];
-
   // Copy the message from the data array (if array has space for null terminator)
-  for (int i = 0; i < *num; i++) {
-    if (i < len) {
-      msg[i] = frm->data[i];
-    }
+  for (int i = 1; i < *num; i++) {
+    msg[i] = frm->data[i];
   }
   msg[*num] = '\0';  // Add null terminator to the message
 }

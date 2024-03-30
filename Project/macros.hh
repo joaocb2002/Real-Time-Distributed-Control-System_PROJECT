@@ -3,7 +3,7 @@
 
 // Macros for CAN communication
 #define CAN_MSG_SIZE 8
-#define CAN_ID_BROADCAST 0xFF
+#define CAN_ID_BROADCAST 255
 
 //Macro for maximum number of picos possible
 #define MAX_LUMINAIRES 8
