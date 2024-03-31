@@ -34,13 +34,14 @@ void print_luminaires_ids(uint8_t arr[], int size) {
 }
 
 //Function to print the crossover gains
-void print_crossover_gains(float gains[], int size) {
+void print_crossover_gains(float gains[], float o, int size) {
   Serial.print("Crossover Gains = [ ");
   for (int i = 0; i < size; ++i) {
     Serial.print(gains[i]);
     Serial.print(" ");
   }
-  Serial.println("]");
+  Serial.print("] o(t) = ");
+  Serial.println(o);
 }
 
 /////////////////////////////////////////////////////
