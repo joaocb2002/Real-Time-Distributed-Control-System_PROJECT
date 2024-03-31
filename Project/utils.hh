@@ -1,7 +1,7 @@
 #ifndef UTILS_H
 #define UTILS_H
 #include "can.h"
-
+#include "macros.hh"
 
 /////////////////////////////////////////////////////
 // Helper function to manage and interact with other picos
@@ -10,7 +10,7 @@
 // Function that returns index of element in array, else returns the index of available slot
 uint8_t find(uint8_t arr[], uint8_t id) {
   int availableSlot = -1;
-  int size = sizeof(arr) / sizeof(arr[0]);
+  int size = MAX_LUMINAIRES;
   for (int i = 0; i < size; ++i) {
     if (arr[i] == id) {
       return i;  // If id is found, return its index
@@ -21,6 +21,27 @@ uint8_t find(uint8_t arr[], uint8_t id) {
   return availableSlot;  // Return available slot index if id not found
 }
 
+// Function to print the IDs of the luminaires
+void print_luminaires_ids(uint8_t arr[], int size) {
+  Serial.print("Luminaires = [ ");
+  for (int i = 0; i < size; ++i) {
+    if (arr[i] != 0) {
+      Serial.print(arr[i]);
+      Serial.print(" ");
+    }
+  }
+  Serial.println("]");
+}
+
+//Function to print the crossover gains
+void print_crossover_gains(float gains[], int size) {
+  Serial.print("Crossover Gains = [ ");
+  for (int i = 0; i < size; ++i) {
+    Serial.print(gains[i]);
+    Serial.print(" ");
+  }
+  Serial.println("]");
+}
 
 /////////////////////////////////////////////////////
 // CAN FRAME: HELPER FUNCTIONS AND DEFINITIONS
@@ -45,13 +66,15 @@ void init_can_frame(can_frame *frm, uint8_t id, uint8_t num) {
 
 // Function to print the contents of a CAN frame
 void print_can_frame_msg(can_frame *frm, uint8_t num) {
-  Serial.print("\nID: ");
-  Serial.println(frm->can_id, HEX);
+  Serial.print("ID: ");
+  Serial.print(frm->can_id, HEX);
   Serial.print(" DLC: ");
-  Serial.println(frm->can_dlc, HEX);
+  Serial.print(frm->can_dlc, HEX);
+  Serial.print(" Dest: ");
+  Serial.print(frm->data[0], HEX);
   Serial.print(" Data: ");
-  for (int i = 0; i < num; i++) {
-    Serial.print(frm->data[i]);
+  for (int i = 1; i < num; i++) {
+    Serial.print(char(frm->data[i]));
     Serial.print(" ");
   }
   Serial.println("");
@@ -67,11 +90,11 @@ void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_
   frm->data[0] = dest_id;
 
   // Copy the message into the data array, filling the rest with '_'
-  for (int i = 0; i < num; i++) {
-    if (i < len) {
-      frm->data[i+1] = msg[i];
+  for (int i = 1; i < num; i++) {
+    if (msg[i-1] != '\0' && i-1 < len) {
+      frm->data[i] = msg[i-1];
     } else {
-      frm->data[i+1] = '_';
+      frm->data[i] = '_';
     }
   }
 }
@@ -82,11 +105,20 @@ void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *de
   *src_id = frm->can_id;
   *num = frm->can_dlc;
   *dest_id = frm->data[0];
+
   // Copy the message from the data array (if array has space for null terminator)
-  for (int i = 1; i < *num; i++) {
-    msg[i] = frm->data[i];
+  int i;
+  for (i = 1; i < *num; i++) {
+    if (frm->data[i] != '_') {
+      msg[i-1] = frm->data[i];
+    }
+    else {
+      break;
+    }
   }
-  msg[*num] = '\0';  // Add null terminator to the message
+
+  // Add null terminator to the message
+  msg[i-1] = '\0';
 }
 
 

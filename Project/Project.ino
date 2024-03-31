@@ -13,8 +13,6 @@
 #include <task.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/gpio.h"
-//#include <gpio.h>
 
 
 
@@ -41,7 +39,6 @@ volatile byte data_available{ false };
 uint8_t canintf_save{ 0 };
 uint8_t eflg_save{ 0 };
 bool detected_errors{ false };
-
 MCP2515 can0{ spi0, 17, 19, 16, 18, 10000000 };  // CS, INT, SCK, MISO, MOSI
 
 //*************Calibration **************
@@ -59,7 +56,7 @@ float analog_low_pass_filter();
 void read_interrupt(uint gpio, uint32_t events);
 void calibration_Hub_Node();
 void calibration_Other_Node();
-void reset_system();
+
 
 
 //*************Objects**************
@@ -73,7 +70,6 @@ QueueHandle_t xQueue_10;  //FreeRTOS queue to store messages to be sent from cor
 //*************FreeRtos Task Running on core 0**************
 void Core0_Loop(void *parameter) {
   for (;;) {
-    //Serial.printf("Task at core %d\n",get_core_num());
     //Variables for CAN communication
     can_frame frm;
     uint32_t msg;
@@ -81,10 +77,15 @@ void Core0_Loop(void *parameter) {
     //Check if already calibrated - if not, wait for the system start message and calibrate the system
     if (!calibrated) {
       wait4start();
+      print_luminaires_ids(pico_id_list, num_luminaires);
       calibrate_system();
+      print_crossover_gains(luminaire_gains, num_luminaires);
       lum.set_G(luminaire_gains[0]);
       calibrated = true;
     }
+
+    Serial.println("Calibration done!");
+    delay(20000);
 
     //Check for user input (TO DO: MAKE THIS SHIT BETTER)
     uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
@@ -141,30 +142,27 @@ void Core0_Loop(void *parameter) {
 //*************FreeRtos Task Running on core 1**************
 void Core1_Loop(void *parameter) {
   for (;;) {
-    //Serial.printf("Task at core %d\n",get_core_num());
     //Variables for CAN communication
     can_frame frm;
     icc_msg msg;
+    MCP2515::ERROR err;
 
     //INCOMING DATA IN CAN BUS
-    if (data_available) {
-      //Read the message from available buffers and send it to core 0 (with ICC_READ_DATA flag)
-      uint8_t irq = can0.getInterrupts();
-      if (irq & MCP2515::CANINTF_RX0IF) {
-        can0.readMessage(MCP2515::RXB0, &frm);
+    //Read the message from available buffers and send it to core 0 (with ICC_READ_DATA flag)
+    uint8_t irq = can0.getInterrupts();
+    if (irq & MCP2515::CANINTF_RX0IF) {
+      if (can0.readMessage(MCP2515::RXB0, &frm) == MCP2515::ERROR_OK) {
         msg.frm = frm;
         msg.cmd = ICC_READ_DATA;
         xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
+      }
+    }
 
-        if (irq & MCP2515::CANINTF_RX1IF) {
-          can0.readMessage(MCP2515::RXB1, &frm);
-          msg.frm = frm;
-          msg.cmd = ICC_READ_DATA;
-          xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
-        }
-
-        //Reset the flag
-        data_available = false;
+    if (irq & MCP2515::CANINTF_RX1IF) {
+      if (can0.readMessage(MCP2515::RXB1, &frm) == MCP2515::ERROR_OK) {
+        msg.frm = frm;
+        msg.cmd = ICC_READ_DATA;
+        xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
       }
     }
 
@@ -173,7 +171,7 @@ void Core1_Loop(void *parameter) {
       //Check the command
       if (msg.cmd == ICC_WRITE_DATA) {
         //Write the message to the CAN bus
-        can0.sendMessage(&msg.frm);
+        err = can0.sendMessage(&msg.frm);
       }
     }
   }
@@ -232,9 +230,11 @@ void setup() {
 //**************Setup 1*******************
 void setup1() {
   //Initialize CAN bus
+  delay(3000);
   can0.reset();
   can0.setBitrate(CAN_1000KBPS);
   can0.setNormalMode();
+  can0.clearRXnOVR();
   gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
 }
 
@@ -265,49 +265,62 @@ void wait4start() {  //Function to wait for the system start message
   icc_msg msg;
   can_frame frm;
   uint8_t src_id, dest_id, num;
-  char b[CAN_MSG_SIZE];//
+  unsigned long int local_time = millis();
 
   while (1) {
-    // Create the message to be sent: "Hello!"
-    msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, "Hello!", sizeof("Hello!"));
 
-    // Send the message through the xQueue01
-    msg.frm = frm;
-    msg.cmd = ICC_WRITE_DATA;
-    if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Sending: Hello from id: %d to id: %d\n", pico_id_list[0],msg.frm.data[0]);
-    }
+    //Every 3s, send a message to the CAN BUS saying "Hello!" and check for incoming messages
+    if (millis() - local_time > 3000) {
+      
+      // Create the message to be sent: "Hello!"
+      char b[CAN_MSG_SIZE];
+      strcpy(b, "Hello!");
+      msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
 
-    //Check for incoming data in xQueue10
-    if (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
-      Serial.println("Received");
-      if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
-        if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me
-          //Extract the message
-          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
-          //Check if the message is a Hello message
-          if (strcmp(b+1, "Hello!") == 0) { //b+1 beacuse first byte is dest_id
-            pico_id_list[find(pico_id_list, msg.frm.can_id)] = msg.frm.can_id;  //Add the id to the list of known ids
-            num_luminaires++;                                                   //Increment the number of luminaires
-            Serial.printf("Received: %s from id: %d\n", b+1, msg.frm.can_id);
-          } else if (strcmp(b+1, "Str Cal") == 0) {  //Check if the message is a start calibration message
-            break;
+      // Send the message through the xQueue01
+      msg.frm = frm;
+      msg.cmd = ICC_WRITE_DATA;
+      if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
+        Serial.printf("Sending ->");
+        print_can_frame_msg(&msg.frm, CAN_MSG_SIZE);
+      }
+
+      //Check for incoming data in xQueue10
+      while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+        if (msg.cmd == ICC_READ_DATA) {   //Check the command
+          if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me
+            //Extract the message
+            char b[CAN_MSG_SIZE];
+            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
+            Serial.printf("Received: %s from id: %d\n", b, msg.frm.can_id);
+
+            //Check if the message is a Hello message
+            if (strcmp(b, "Hello!") == 0) { //b+1 beacuse first byte is dest_id
+              if (find(pico_id_list, msg.frm.can_id) >= num_luminaires) {  //Check if the id is already in the list
+                pico_id_list[find(pico_id_list, 0)] = msg.frm.can_id;  //Add the id to the list of known ids
+                num_luminaires++;  //Increment the number of luminaires
+                Serial.printf("NEW NODE: %d\n", msg.frm.can_id);
+              }                                                 //Increment the number of luminaires
+            } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start calibration message
+              Serial.printf("End of wait4start\n");
+              return;
+            }
           }
         }
       }
-    }
 
-    //Check for incoming data in serial port
-    if (Serial.available()) {
-      if (Serial.readStringUntil('\n') == "Start") {
-        hub = true;
-        hub_id = pico_id_list[0];
-        break;
+      //Check for incoming data in serial port
+      if (Serial.available()) {
+        if (Serial.readStringUntil('\n') == "Start") {
+          hub = true;
+          hub_id = pico_id_list[0];
+          break;
+        }
       }
-    }
 
-    // Delay 0.5s to avoid overflow
-    vTaskDelay(500);
+      //Reset timer
+      local_time = millis();
+    }
   }
 }
 
@@ -326,40 +339,6 @@ void calibrate_system() {  //Function to calibrate the system cross coupling gai
   }
 }
 
-//*************** TO DO
-/*
-void reset_system(){ //Function to reset the whole system (hub node receives order from user and coordinates the reset)
-  //Tell other picos i am entering reset/calibration mode
-  send_message_every(int('R'),0);
-
-  //Turn off my led and all the other LEDs
-  analogWrite(LED_PIN, int(0)); //turn off my led
-  send_message_every(int('d'),0);
-
-  delay(1000); //Wait some time for steady state
-  //Measure my external illuminance
-  o = lum.lux_func(analog_low_pass_filter());
-  Serial.println(o);
-  //Send message to other picos ordering them to measure their external illuminance
-  //TO_DO
-
-  //Iterate over each one of the picos
-  //At each iteration, turn one led on and measure stuff
-  for (int i = 0; i < sizeof(pico_id_list) / sizeof(pico_id_list[0]); i++) {
-    if(pico_id_list[i] != 0){
-      //turn_off_except(pico_id_list[i]);
-      //Measure gains
-      //Send message to other picos, telling them to measure gains
-      //TO_DO
-    }
-  }
-
-  calibrated = true;
-  //Tell other picos calibration is done
-  send_message_every(int('R'),1);
-}
-*/
-
 void calibration_Hub_Node() {  //Function to calibrate the system cross coupling gains (hub node)
 
   Serial.println("Starting Calibration (I am Hub)...");
@@ -367,52 +346,82 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   // Initialize variables
   icc_msg msg;
   can_frame frm;
+  unsigned long int local_time;
 
   // Send message to all the picos to start calibration
-  msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, "Str Cal", sizeof("Str Cal"));
+  char b[CAN_MSG_SIZE]; strcpy(b, "S Cal");
+  msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY);
+  if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
+    //Print sent message 'b'
+    Serial.printf("Calibration message sent: %s\n", b);
+  }
+
+  //Wait for 3 seconds for the other picos to turn off their leds
+  local_time = millis();
+  while (millis() - initial_time < 3000);
 
   //Turn off every led (the other who receives the message will also turn off their led)
   analogWrite(LED_PIN, int(0));  //turn off my led
-  delay(3000);                   //Wait some time for steady state
 
+  //Wait for 3 seconds for the other picos to turn off their leds
+  local_time = millis();
+  while (millis() - initial_time < 3000);
+  
   // Register the external illuminance
+  Serial.println("Measuring external illuminance...");
   o = lum.lux_func(analog_low_pass_filter());
 
   //Iterate over each one of the picos, turning one led on at a time and measuring gains
   for (int i = 0; i < num_luminaires; i++) {
+    Serial.printf("Calibrating node %d\n", pico_id_list[i]);
     if (i == 0) {
       analogWrite(LED_PIN, int(DAC_RANGE));  //turn on my led
     }
 
     //Create message: "Calibrate <id>"
     char b[CAN_MSG_SIZE];
-    sprintf(b, "Cal %d", pico_id_list[i]);
+    strcpy(b, "Cal _");
+    b[4] = pico_id_list[i];  // Check what is the id to turn on
 
     // Send message to warn other picos to measure gains (and the corresponding one to turn on its own led)
     msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
 
+    //Send the message through the xQueue01
+    msg.frm = frm;
+    msg.cmd = ICC_WRITE_DATA;
+    if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Sent 'Calibrate %d' message!\n", pico_id_list[i]);
+    }
+
     //Measure gains
-    delay(1500);
+    local_time = millis();
+    while(millis() - local_time < 3000); //Wait some time for steady state (1.5s)
+    Serial.println("Measuring gains...");
     luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
-    delay(1500);
+    local_time = millis();
+    while(millis() - local_time < 3000); //Wait some time for steady state (1.5s)
 
     //Turn off my led
     analogWrite(LED_PIN, int(0));  //turn off my led
   }
 
   //Tell other picos calibration is done
-  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, "End Cal", sizeof("End Cal"));
+  char b2[CAN_MSG_SIZE] = "E Cal";
+  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b2, sizeof(b2));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY);
-  Serial.println("Calibration Finished!");
+  if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+    Serial.println("Sent 'End Calibration' message!");
+  }
 }
 
 void calibration_Other_Node() {  //Function to calibrate the system cross coupling gains (other nodes)
   Serial.println("Starting Calibration (I am NOT Hub)...");
+
+  // Initialize variables
+  unsigned long int local_time;
 
   //Turn off my led
   analogWrite(LED_PIN, int(0));  //turn off my led
@@ -421,7 +430,7 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
   while (1) {
     //Check for incoming data in xQueue10
     icc_msg msg;
-    if (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+    while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
       if (msg.cmd == ICC_READ_DATA) {               //Check the command
         if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
           //Extract the message
@@ -429,28 +438,36 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
           char b[CAN_MSG_SIZE];
           can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
 
+          // Print the message
+          Serial.printf("Received: %s from id: %d\n", b, msg.frm.can_id);
+
           //Check if the message is to end calibration
-          if (strcmp(b, "End Cal") == 0) {
-            break;
+          if (strcmp(b, "E Cal") == 0) {
+            return;
           }
 
           //Check if the message is to do calibration (starts with Cal)
           if (b[0] == 'C' && b[1] == 'a' && b[2] == 'l') {
 
-            node_id = b[4];  // Check what is the id to turn on
+            // Extract the node id
+            node_id = (uint8_t)b[4];  // Check what is the id to turn on
+            Serial.printf("Calibrating node %d\n", node_id);
 
             // Check the position of the id in the list
             int pos = find(pico_id_list, node_id);
+            Serial.printf("Position: %d\n", pos);
 
             // Turn on my led, if it is my turn
             if (pos == 0) {
-              analogWrite(LED_PIN, int(DAC_RANGE));  //turn on my led
+              analogWrite(LED_PIN, int(DAC_RANGE-1));  //turn on my led
             }
 
             // Introduce some delay and measure gains
-            delay(1500);
+            local_time = millis();
+            while (millis() - local_time < 3000);  //Wait some time for steady state (1.5s)
             luminaire_gains[pos] = lum.lux_func(analog_low_pass_filter()) / 100;
-            delay(1500);
+            local_time = millis();
+            while (millis() - local_time < 3000);  //Wait some time for steady state (1.5s)
 
             // Turn off my led
             analogWrite(LED_PIN, int(0));  //turn off my led
