@@ -100,7 +100,7 @@ void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_
 }
 
 // Function to convert a CAN frame into a message
-void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *dest_id, char *msg, int len) {
+void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *dest_id, char *msg) {
   // Set the source node ID, number of bytes, and destination node ID
   *src_id = frm->can_id;
   *num = frm->can_dlc;

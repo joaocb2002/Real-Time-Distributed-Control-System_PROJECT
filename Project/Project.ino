@@ -69,11 +69,9 @@ QueueHandle_t xQueue_10;  //FreeRTOS queue to store messages to be sent from cor
 
 //*************FreeRtos Task Running on core 0**************
 void Core0_Loop(void *parameter) {
+  // Silence warnings about unused parameters. 
+  ( void ) parameter;
   for (;;) {
-    //Variables for CAN communication
-    can_frame frm;
-    uint32_t msg;
-
     //Check if already calibrated - if not, wait for the system start message and calibrate the system
     if (!calibrated) {
       wait4start();
@@ -88,7 +86,7 @@ void Core0_Loop(void *parameter) {
     delay(20000);
 
     //Check for user input (TO DO: MAKE THIS SHIT BETTER)
-    uint8_t reset = handle_serial(lum, my_pid, x_ref, r, y, u, initial_time);
+    uint8_t reset = handle_serial(lum, my_pid, x_ref, y, u, initial_time);
 
     if (reset == 2) {
       //reset_system();
@@ -141,11 +139,13 @@ void Core0_Loop(void *parameter) {
 
 //*************FreeRtos Task Running on core 1**************
 void Core1_Loop(void *parameter) {
+  // Silence warnings about unused parameters. 
+  ( void ) parameter;
+
   for (;;) {
     //Variables for CAN communication
     can_frame frm;
     icc_msg msg;
-    MCP2515::ERROR err;
 
     //INCOMING DATA IN CAN BUS
     //Read the message from available buffers and send it to core 0 (with ICC_READ_DATA flag)
@@ -171,7 +171,9 @@ void Core1_Loop(void *parameter) {
       //Check the command
       if (msg.cmd == ICC_WRITE_DATA) {
         //Write the message to the CAN bus
-        err = can0.sendMessage(&msg.frm);
+        if(can0.sendMessage(&msg.frm) != MCP2515::ERROR_OK){
+          Serial.println("Errors in sending...");
+        } 
       }
     }
   }
@@ -200,7 +202,7 @@ void setup() {
   pico_get_unique_board_id_string(pico_string_id, LUM_ID_SIZE);
 
   //Initialize luminaire object, according to board type
-  lum.init_lum(pico_string_id, LUM_ID_SIZE);
+  lum.init_lum(pico_string_id);
 
 
   /*****************************************/
@@ -291,15 +293,15 @@ void wait4start() {  //Function to wait for the system start message
           if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me
             //Extract the message
             char b[CAN_MSG_SIZE];
-            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
-            Serial.printf("Received: %s from id: %d\n", b, msg.frm.can_id);
+            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
+            Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
 
             //Check if the message is a Hello message
             if (strcmp(b, "Hello!") == 0) { //b+1 beacuse first byte is dest_id
               if (find(pico_id_list, msg.frm.can_id) >= num_luminaires) {  //Check if the id is already in the list
                 pico_id_list[find(pico_id_list, 0)] = msg.frm.can_id;  //Add the id to the list of known ids
                 num_luminaires++;  //Increment the number of luminaires
-                Serial.printf("NEW NODE: %d\n", msg.frm.can_id);
+                Serial.printf("NEW NODE: %d\n", int(msg.frm.can_id));
               }                                                 //Increment the number of luminaires
             } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start calibration message
               Serial.printf("End of wait4start\n");
@@ -436,10 +438,10 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
           //Extract the message
           uint8_t src_id, dest_id, num, node_id;
           char b[CAN_MSG_SIZE];
-          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b, sizeof(b));
+          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
 
           // Print the message
-          Serial.printf("Received: %s from id: %d\n", b, msg.frm.can_id);
+          Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
 
           //Check if the message is to end calibration
           if (strcmp(b, "E Cal") == 0) {
@@ -481,6 +483,8 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
 //************** Timers, interrupts and callbacks functions **************
 
 bool my_repeating_control_callback(struct repeating_timer *t) {  //Function to set control flag to true
+  // Silence warnings about unused parameters. 
+  ( void ) t;
   if (!control_flag)
     control_flag = true;
   return true;
@@ -512,6 +516,9 @@ float analog_low_pass_filter() {  //Function to read the analog input value and 
 }
 
 void read_interrupt(uint gpio, uint32_t events) {  //Function to detect interrupt for CAN bus (data available)
+  // Silence warnings about unused parameters. 
+  ( void ) gpio;
+  ( void ) events;
   data_available = true;
 }
 

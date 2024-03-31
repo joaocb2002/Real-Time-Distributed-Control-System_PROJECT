@@ -6,7 +6,7 @@
 #include "PID.hh"
 
 // Function to handle serial communication and user interface
-int handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &r, float &y, float &u, time_t inicial_time) {
+int handle_serial(CLuminaire &lum, CPID &pid, float &x_ref, float &y, float &u, time_t inicial_time) {
 
   // Check if there is data available to read
   if (!Serial.available()) {

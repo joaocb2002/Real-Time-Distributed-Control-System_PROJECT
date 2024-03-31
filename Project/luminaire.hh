@@ -43,7 +43,7 @@ class CLuminaire {
         ~CLuminaire(){}
 
         // **** Initialize luminaire with right parameters (m, b, type) using its unique ID ****
-        void init_lum(char* id, int len){
+        void init_lum(char* id){
 
             // Set m and b according to the luminaire type
             if (strcmp(id, LUM_A_ID) == 0){
