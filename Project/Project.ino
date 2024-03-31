@@ -218,6 +218,9 @@ void setup() {
 
   //Setup serial communication and IO pins
   Serial.begin(SERIAL_BAUD);
+  //while(!Serial.available()){
+  //wait for serial comms
+  //}
   analogReadResolution(ADC_RESOLUTION);  //2^12 bits = 4095
   analogWriteFreq(PWM_FREQ);             //PWM frequency = 60kHz
   analogWriteRange(DAC_RANGE);           //PWM range = 4095
@@ -231,7 +234,6 @@ void setup() {
 
   //Initialize luminaire object, according to board type
   lum.init_lum(pico_string_id);
-
 
   /*****************************************/
   //Calibrate open loop gain G
@@ -390,7 +392,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
 
   //Wait for 3 seconds for the other picos to receive their messages
   vTaskDelay(3000);
-    
+
   //Turn off every led (the other who receives the message will also turn off their led)
   analogWrite(LED_PIN, int(0));  //turn off my led
 
@@ -436,12 +438,12 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     }
 
     //Measure gains
-    vTaskDelay(5000); //Wait some time for steady state (5s)
+    vTaskDelay(5000);  //Wait some time for steady state (5s)
 
     Serial.println("Measuring gains...");
     luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
-    
-    vTaskDelay(1000);//Wait some time for sync (1s)
+
+    vTaskDelay(1000);  //Wait some time for sync (1s)
 
     //Turn off my led
     analogWrite(LED_PIN, int(0));  //turn off my led
@@ -503,16 +505,15 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
             // Turn on my led, if it is my turn
             if (pos == 0) {
               analogWrite(LED_PIN, int(DAC_RANGE - 1));  //turn on my led
-            }
-            else{
+            } else {
               analogWrite(LED_PIN, 0);  //Redundant but just to make sure
             }
 
             // Introduce some delay and measure gains
             vTaskDelay(5000);
             luminaire_gains[pos] = lum.lux_func(analog_low_pass_filter()) / 100;
-            
-            vTaskDelay(3000); //Wait some time for sync (1s)
+
+            vTaskDelay(3000);  //Wait some time for sync (1s)
 
             // Turn off my led
             analogWrite(LED_PIN, int(0));  //turn off my led

@@ -21,6 +21,11 @@
 #define LUM_C_ID "E660C0D1C7680F2F"
 #define LUM_ID_SIZE 17
 
+// Macros for Luminaire ID - Mike
+#define LUM_A_ID_mike "E66118604B6E5021"
+#define LUM_B_ID_mike "E66118604B555C21"
+#define LUM_C_ID_mike "E66118604B714221"
+
 //Macros for LUX function (for each luminaire A, B and C)
 #define bA 6.127
 #define mA -0.80
@@ -28,6 +33,14 @@
 #define mB -0.81
 #define bC 5.820
 #define mC -0.77
+
+//Macros for LUX function (for each luminaire A, B and C) (do Mike)
+#define bA_mike 6.06
+#define mA_mike -0.90
+#define bB_mike 5.85
+#define mB_mike -0.90
+#define bC_mike 5.85
+#define mC_mike -0.90
 
 //Macros for luminaire gains
 #define GA 0.75614
