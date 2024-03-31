@@ -1,6 +1,9 @@
 #ifndef MACROS_HH
 #define MACROS_HH
 
+// Macros for user input
+#define USER_INPUT_MAX_SIZE 8 // Maximum size of user input: 7 characters + '\0'
+
 // Macros for CAN communication
 #define CAN_MSG_SIZE 8
 #define CAN_ID_BROADCAST 255

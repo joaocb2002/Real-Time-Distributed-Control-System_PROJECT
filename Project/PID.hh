@@ -22,6 +22,7 @@ class CPID {
     public:
     explicit CPID(float _h, float _K = 1, float b_ = 1,float Ti_ = 1, float Td_ = 0, float Tt_ = 1, float N_ = 10);
     ~CPID() {};
+    void reset_pid();
 
     void set_anti_windup(bool _anti_windup);
     bool get_anti_windup();
@@ -46,6 +47,11 @@ class CPID {
 // Constructor
 inline CPID::CPID(float _h, float _K, float b_, float Ti_, float Td_, float Tt_, float N_) {
     h = _h; K = _K; b = b_; Ti = Ti_; Td = Td_; Tt = Tt_; N = N_; P = 0; I = 0; D = 0; y_old = 0; k_old = 0; b_old = 0, ad = 0; bd = 0; ao = 0; anti_windup = true; feedback = true; feedforward = true;
+}
+
+// Resetter
+void CPID::reset_pid() {
+    I = 0; D = 0; P = 0; y_old = 0; k_old = 0; b_old = 0; ad = 0; bd = 0; ao = 0;
 }
 
 // Member function to update controller parameters depending on set point LUX value

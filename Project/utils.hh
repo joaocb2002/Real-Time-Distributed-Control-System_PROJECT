@@ -8,7 +8,7 @@
 /////////////////////////////////////////////////////
 
 // Function that returns index of element in array, else returns the index of available slot
-uint8_t find(uint8_t arr[], uint8_t id) {
+uint8_t find_id(uint8_t arr[], uint8_t id) {
   int availableSlot = -1;
   int size = MAX_LUMINAIRES;
   for (int i = 0; i < size; ++i) {
@@ -21,6 +21,23 @@ uint8_t find(uint8_t arr[], uint8_t id) {
   return availableSlot;  // Return available slot index if id not found
 }
 
+uint8_t find_type(char arr[], char type) {
+  int availableSlot = -1;
+  int size = MAX_LUMINAIRES;
+  for (int i = 0; i < size; ++i) {
+    if (arr[i] == type) {
+      return i;  // If id is found, return its index
+    } else if (arr[i] == 'X' && availableSlot == -1) {
+      availableSlot = i;  // Update available slot index if found
+    }
+  }
+  return availableSlot;  // Return available slot index if id not found
+}
+
+
+
+
+/////////////////////////////////////////////////////
 // Function to print the IDs of the luminaires
 void print_luminaires_ids(uint8_t arr[], int size) {
   Serial.print("Luminaires = [ ");
@@ -44,16 +61,25 @@ void print_crossover_gains(float gains[], float o, int size) {
   Serial.println(o);
 }
 
+// Function to print the types of the luminaires
+void print_luminaires_types(char arr[], int size) {
+  Serial.print("Luminaires types = [ ");
+  for (int i = 0; i < size; ++i) {
+    if (arr[i] != 'X') {
+      Serial.print(arr[i]);
+      Serial.print(" ");
+    }
+  }
+  Serial.println("]");
+}
+
+
+
+
+
 /////////////////////////////////////////////////////
 // CAN FRAME: HELPER FUNCTIONS AND DEFINITIONS
 /////////////////////////////////////////////////////
-
-// Reminder of the definition of a CAN frame
-/*typedef struct can_frame {
-  uint32_t can_id;  // Will be the sending node ID
-  uint8_t can_dlc;  // Data length code (number of bytes: 8)
-  uint8_t data[CAN_MSG_SIZE];  // Byte 0: Destination node ID, Byte 1-7: Char data
-} can_frame; */
 
 // Function to initialize a CAN frame message with a given id and number of bytes
 void init_can_frame(can_frame *frm, uint8_t id, uint8_t num) {
@@ -123,6 +149,9 @@ void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *de
 }
 
 
+
+
+
 /////////////////////////////////////////////////////
 // INTER-CORE COMMUNICATION: HELPER FUNCTIONS AND DEFINITIONS
 /////////////////////////////////////////////////////
@@ -139,6 +168,8 @@ typedef struct icc_msg {
     can_frame frm;         // CAN frame message
     inter_core_cmds cmd;  // Inter-core command
 } icc_msg;
+
+
 
 
 /////////////////////////////////////////////////////
