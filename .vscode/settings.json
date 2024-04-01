@@ -1,3 +1,9 @@
 {
-    "C_Cpp.errorSquiggles": "enabled"
+    "C_Cpp.errorSquiggles": "enabled",
+    "files.associations": {
+        "mstd_mutex": "cpp",
+        "*.tcc": "cpp",
+        "random": "cpp",
+        "compare": "cpp"
+    }
 }

@@ -2,7 +2,6 @@
 #include "macros.hh"
 #include "luminaire.hh"
 #include "PID.hh"
-#include "interface.hh"
 #include "mcp2515.h"
 #include "can.h"
 #include <hardware/flash.h>
@@ -13,7 +12,6 @@
 #include <task.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
-
 
 
 //*************Global Variables**************
@@ -98,9 +96,10 @@ void Core0_Loop(void *parameter) {
 
     //Check for incoming data in xQueue10
     while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+
       if (msg.cmd == ICC_READ_DATA) {  //Check the command
         if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
-          
+
           //Extract the message and print it
           uint8_t src_id, dest_id, num;
           char b[CAN_MSG_SIZE];
@@ -109,19 +108,25 @@ void Core0_Loop(void *parameter) {
 
           //Handle message 
           if (strcmp(b, "Reset") == 0) { //Check if the message is to reset the system
-            reset_func(); //Reset the system (induce a reset/calibration)
+            reset_func(); //Reset the system (induce a reset/calibration)~
+            break;
           }
-          else { //If not, probably a user input message - handle it and send response to hub node 
-            // Initialize response message
-            char response[CAN_MSG_SIZE];
-            handle_user_command(b, sizeof(b), response, sizeof(response));
+          else { 
+            if (hub) { //If Hub Node, probably response to a user command. Send to serial port
+              Serial.printf("Response: %s\n", b);
+            }
+            else { //If not Hub Node, probably a user command, so handle it and send response
+              // Initialize response message
+              char response[CAN_MSG_SIZE];
+              handle_user_command(b, sizeof(b), response, sizeof(response));
 
-            // Send response to hub node
-            msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, src_id, response, sizeof(response));
-            msg.frm = frm;
-            msg.cmd = ICC_WRITE_DATA;
-            if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
-              Serial.printf("Sent '%s' message to node %d!\n", response, src_id);
+              // Send response to hub node
+              msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, src_id, response, sizeof(response));
+              msg.frm = frm;
+              msg.cmd = ICC_WRITE_DATA;
+              if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+                Serial.printf("Sent '%s' message to node %d!\n", response, src_id);
+              }
             }
           }
         }
@@ -350,9 +355,7 @@ void wait4start() {  //Function to wait for the system start message
               num_luminaires++;                                        //Increment the number of luminaires
               Serial.printf("NEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
             }
-          } else if (strcmp(b, "Start") == 0) {  //Check if the message is a start message sent by Hub Node
-            hub = true;
-            hub_id = msg.frm.can_id;
+          } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start message sent by Hub Node saying Start
             return;
           }
         }
@@ -466,8 +469,8 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   }
 
   //Tell other picos calibration is done
-  char b[CAN_MSG_SIZE] = "E Cal";
-  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
+  char b2[CAN_MSG_SIZE] = "E Cal";
+  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b2, sizeof(b2));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
   if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
@@ -627,13 +630,17 @@ void hub_function() {  //Function to handle user input in the hub node
     }
 
     // Initialize response message
-    char response[CAN_MSG_SIZE];
+    char response[USER_INPUT_MAX_SIZE];
 
     // If command is intended to Hub node (me), then process it right away
     if (node_id == pico_id_list[0])
     {
       handle_user_command(user_input, sizeof(user_input), response, sizeof(response));
-      Serial.printf("Input: %s\nResponse: %s\n", user_input, response);
+      user_input[USER_INPUT_MAX_SIZE-1] = '\0';
+      response[USER_INPUT_MAX_SIZE-1] = '\0';
+      Serial.printf("Received: %s\nResponse: %s\n", user_input, response);
+      message = true;
+      return;
     }
     
     // If command is intended to other nodes, then send it to the other nodes
@@ -730,7 +737,7 @@ void handle_user_command(char* user_input, int size, char* response, int respons
 	} else if (command.startsWith("g d")) { // Get duty cycle
 		sscanf(command.c_str(), "g d %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "d %c %f", i, u*100/4095);
+      sprintf(response, "d %c %.0f", i, u*100/4095);
 		}
 	} else if (command.startsWith("r")) { // Set reference value
 		sscanf(command.c_str(), "r %c %f", &i, &lux);
@@ -741,12 +748,12 @@ void handle_user_command(char* user_input, int size, char* response, int respons
 	} else if (command.startsWith("g r")) { // Get reference value
 		sscanf(command.c_str(), "g r %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "r %c %f", i, x_ref);
+      sprintf(response, "r %c %.0f", i, x_ref);
     }
 	} else if (command.startsWith("g l")) { // Measure luminance
 		sscanf(command.c_str(), "g l %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "l %c %f", i, lum.lux_func(analog_low_pass_filter()));
+      sprintf(response, "l %c %.1f", i, lum.lux_func(analog_low_pass_filter()));
     }
 	} else if (command.startsWith("o")) { // Set occupancy status
 		sscanf(command.c_str(), "o %c %d", &i, &occupancy);
@@ -784,12 +791,12 @@ void handle_user_command(char* user_input, int size, char* response, int respons
 	} else if (command.startsWith("g x")) { // Get external illuminance
 		sscanf(command.c_str(), "g x %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "x %c %f", i, o);
+      sprintf(response, "x %c %.1f", i, o);
     }
 	} else if (command.startsWith("g p")) { // Get instantaneous power
 		sscanf(command.c_str(), "g p %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "p %c %f", i, 1000*u*1/4095*PMAX);
+      sprintf(response, "p %c %.1f", i, 1000*u*1/4095*PMAX);
     }
 	} else if (command.startsWith("g t")) { //Get time since last restart
 		sscanf(command.c_str(), "g t %c", &i);
@@ -799,17 +806,17 @@ void handle_user_command(char* user_input, int size, char* response, int respons
 	} else if (command.startsWith("g e")) { // Get energy
 		sscanf(command.c_str(), "g e %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "e %c %f", i, lum.get_total_energy_consumption());
+      sprintf(response, "e %c %.0f", i, lum.get_total_energy_consumption());
     }
 	} else if (command.startsWith("g v")) { // Get visibility error
 		sscanf(command.c_str(), "g v %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "v %c %f", i, lum.get_total_visibility_error());
+      sprintf(response, "v %c %.1f", i, lum.get_total_visibility_error());
     }
 	} else if (command.startsWith("g f")) { // Get flicker
 		sscanf(command.c_str(), "g f %c", &i);
 		if (i == lum.get_type()) {
-      sprintf(response, "f %c %f", i, lum.get_total_flicker());
+      sprintf(response, "f %c %.1f", i, lum.get_total_flicker());
 	  }
   } else {
     strcpy(response, "err");
