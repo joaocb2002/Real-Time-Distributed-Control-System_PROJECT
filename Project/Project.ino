@@ -11,6 +11,7 @@
 #include <queue.h>
 #include <task.h>
 #include <stdio.h>
+#include "consensus.h"
 #include "pico/stdlib.h"
 
 
@@ -56,11 +57,14 @@ void read_interrupt(uint gpio, uint32_t events);
 void calibration_Hub_Node();
 void calibration_Other_Node();
 void hub_function();
+void update_consensus();
 
 
 //*************Objects**************
 CLuminaire lum;                                 //Luminaire object
 CPID my_pid(TIME_SAMPLING, 1, 1, 1, 0, 1, 10);  //Sampling time = 10ms, K = 1, b = 1, Ti = 1, Td = 0, Tt = 1, N = 10
+CONSENSUS con(luminaire_gains, o);
+consensus_out output;
 
 //*************Inter-core communication**************
 QueueHandle_t xQueue_01;  //FreeRTOS queue to store messages to be sent from core 0 to core 1
@@ -87,6 +91,9 @@ void Core0_Loop(void *parameter) {
       lum.set_G(luminaire_gains[0]);
       calibrated = true;
       Serial.println("Calibration done!");
+
+      //After calibration we need to send the updated gains to the consensus
+      con.update_gains(luminaire_gains, o);
     }
 
     //If Hub Node, call Hub Function to check for user input
@@ -94,10 +101,17 @@ void Core0_Loop(void *parameter) {
       hub_function();
     }
 
+    //Placeholder for the consensus update
+    /*
+    if(time to consensus){
+      update_consensus();
+    }
+    */
+
     //Check for incoming data in xQueue10
     while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
 
-      if (msg.cmd == ICC_READ_DATA) {  //Check the command
+      if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
         if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
 
           //Extract the message and print it
@@ -106,16 +120,14 @@ void Core0_Loop(void *parameter) {
           can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
           Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
 
-          //Handle message 
-          if (strcmp(b, "Reset") == 0) { //Check if the message is to reset the system
-            reset_func(); //Reset the system (induce a reset/calibration)~
+          //Handle message
+          if (strcmp(b, "Reset") == 0) {  //Check if the message is to reset the system
+            reset_func();                 //Reset the system (induce a reset/calibration)~
             break;
-          }
-          else { 
-            if (hub) { //If Hub Node, probably response to a user command. Send to serial port
+          } else {
+            if (hub) {  //If Hub Node, probably response to a user command. Send to serial port
               Serial.printf("Response: %s\n", b);
-            }
-            else { //If not Hub Node, probably a user command, so handle it and send response
+            } else {  //If not Hub Node, probably a user command, so handle it and send response
               // Initialize response message
               char response[CAN_MSG_SIZE];
               handle_user_command(b, sizeof(b), response, sizeof(response));
@@ -280,7 +292,7 @@ void setup1() {
   can0.setNormalMode();
   can0.clearRXnOVR();
 
-  //Set up interrupt for CAN bus 
+  //Set up interrupt for CAN bus
   gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
 }
 
@@ -338,9 +350,9 @@ void wait4start() {  //Function to wait for the system start message
 
     //Check for incoming data in xQueue10
     while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
-      if (msg.cmd == ICC_READ_DATA) { //Check the command                                                
-        if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is broadcast 
-          
+      if (msg.cmd == ICC_READ_DATA) {               //Check the command
+        if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is broadcast
+
           //Extract the message
           char b[CAN_MSG_SIZE];
           can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
@@ -351,8 +363,8 @@ void wait4start() {  //Function to wait for the system start message
             //Check if the id is already in the list
             if (find_id(pico_id_list, msg.frm.can_id) >= num_luminaires) {
               pico_id_list[find_id(pico_id_list, 0)] = msg.frm.can_id;  //Add the id to the list of known ids
-              luminaire_types[find_type(luminaire_types, 0)] = b[6];      //Add the type to the list of known types
-              num_luminaires++;                                        //Increment the number of luminaires
+              luminaire_types[find_type(luminaire_types, 0)] = b[6];    //Add the type to the list of known types
+              num_luminaires++;                                         //Increment the number of luminaires
               Serial.printf("NEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
             }
           } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start message sent by Hub Node saying Start
@@ -455,14 +467,14 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     }
 
     //Wait some time for steady state (5s)
-    vTaskDelay(5000);  
+    vTaskDelay(5000);
 
     //Measure gains
     Serial.println("\nMeasuring gains...");
     luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
 
     //Wait some time for sync (3s)
-    vTaskDelay(3000);  
+    vTaskDelay(3000);
 
     //Turn off my led
     analogWrite(LED_PIN, int(0));  //turn off my led
@@ -533,10 +545,10 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
             // Introduce some delay and measure gains
             vTaskDelay(5000);
             luminaire_gains[pos] = lum.lux_func(analog_low_pass_filter()) / 100;
-            vTaskDelay(3000);  
+            vTaskDelay(3000);
 
             // Turn off my led
-            analogWrite(LED_PIN, int(0));  
+            analogWrite(LED_PIN, int(0));
           }
         }
       }
@@ -544,7 +556,7 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
   }
 }
 
-void reset_func() {  //Function to reset the system parameters: will induce a reset 
+void reset_func() {  //Function to reset the system parameters: will induce a reset
 
   // Reset the calibration/initialization flag
   calibrated = false;
@@ -618,7 +630,7 @@ void hub_function() {  //Function to handle user input in the hub node
       //Reset the my subsystem
       reset_func();
     }
-    
+
     // Check for which node the command is intended: each node has a unique type (A, B, C, etc. - in capital letters)
     char node_type = find_user_command_destination(user_input, USER_INPUT_MAX_SIZE);
     uint8_t node_id = pico_id_list[find_type(luminaire_types, node_type)];
@@ -633,16 +645,15 @@ void hub_function() {  //Function to handle user input in the hub node
     char response[USER_INPUT_MAX_SIZE];
 
     // If command is intended to Hub node (me), then process it right away
-    if (node_id == pico_id_list[0])
-    {
+    if (node_id == pico_id_list[0]) {
       handle_user_command(user_input, sizeof(user_input), response, sizeof(response));
-      user_input[USER_INPUT_MAX_SIZE-1] = '\0';
-      response[USER_INPUT_MAX_SIZE-1] = '\0';
+      user_input[USER_INPUT_MAX_SIZE - 1] = '\0';
+      response[USER_INPUT_MAX_SIZE - 1] = '\0';
       Serial.printf("Received: %s\nResponse: %s\n", user_input, response);
       message = true;
       return;
     }
-    
+
     // If command is intended to other nodes, then send it to the other nodes
     msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, node_id, user_input, sizeof(user_input));
     msg.frm = frm;
@@ -701,14 +712,12 @@ void read_interrupt(uint gpio, uint32_t events) {  //Function to detect interrup
 
 // Function to detect destination node from a user command
 char find_user_command_destination(char *command, int size) {
-  
+
   // Iterate over the command to find the destination node (unique) type: A, B or C
-  for (size_t i = 0; i < size; i++)
-  {
+  for (int i = 0; i < size; i++) {
     if (command[i] == 'A' || command[i] == 'B' || command[i] == 'C') {
       return command[i];
-    }
-    else if (command[i] == '\0') { // End of string
+    } else if (command[i] == '\0') {  // End of string
       break;
     }
   }
@@ -717,110 +726,137 @@ char find_user_command_destination(char *command, int size) {
 }
 
 // Function to handle user interface commands
-void handle_user_command(char* user_input, int size, char* response, int response_size) {
-  
+void handle_user_command(char *user_input, int size, char *response, int response_size) {
+
   // Convert the user input to a string
   String command = String(user_input);
 
   // Initialize variables
   char i;
   int occupancy, anti_windup, feedback;
-	float duty_cycle, lux;
+  float duty_cycle, lux;
 
   // Process the command
-	if (command.startsWith("d")) { // Set duty cycle directly (in percentage)
-		sscanf(command.c_str(), "d %c %f", &i, &duty_cycle);
-		if (i == lum.get_type()) {
+  if (command.startsWith("d")) {  // Set duty cycle directly (in percentage)
+    sscanf(command.c_str(), "d %c %f", &i, &duty_cycle);
+    if (i == lum.get_type()) {
       x_ref = lum.get_G() * duty_cycle;
-		}
-		strcpy(response, "ack");
-	} else if (command.startsWith("g d")) { // Get duty cycle
-		sscanf(command.c_str(), "g d %c", &i);
-		if (i == lum.get_type()) {
-      sprintf(response, "d %c %.0f", i, u*100/4095);
-		}
-	} else if (command.startsWith("r")) { // Set reference value
-		sscanf(command.c_str(), "r %c %f", &i, &lux);
-		if (i == lum.get_type()) {
+    }
+    strcpy(response, "ack");
+  } else if (command.startsWith("g d")) {  // Get duty cycle
+    sscanf(command.c_str(), "g d %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "d %c %.0f", i, u * 100 / 4095);
+    }
+  } else if (command.startsWith("r")) {  // Set reference value
+    sscanf(command.c_str(), "r %c %f", &i, &lux);
+    if (i == lum.get_type()) {
       x_ref = lux;
     }
     strcpy(response, "ack");
-	} else if (command.startsWith("g r")) { // Get reference value
-		sscanf(command.c_str(), "g r %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g r")) {  // Get reference value
+    sscanf(command.c_str(), "g r %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "r %c %.0f", i, x_ref);
     }
-	} else if (command.startsWith("g l")) { // Measure luminance
-		sscanf(command.c_str(), "g l %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g l")) {  // Measure luminance
+    sscanf(command.c_str(), "g l %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "l %c %.1f", i, lum.lux_func(analog_low_pass_filter()));
     }
-	} else if (command.startsWith("o")) { // Set occupancy status
-		sscanf(command.c_str(), "o %c %d", &i, &occupancy);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("o")) {  // Set occupancy status
+    sscanf(command.c_str(), "o %c %d", &i, &occupancy);
+    if (i == lum.get_type()) {
       lum.set_occupancy(occupancy);
       strcpy(response, "ack");
     }
-	} else if (command.startsWith("g o")) { // Get occupancy status
-		sscanf(command.c_str(), "g o %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g o")) {  // Get occupancy status
+    sscanf(command.c_str(), "g o %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "o %c %d", i, lum.get_occupancy());
     }
-	} else if (command.startsWith("a")) { // Set anti-windup flag
-		sscanf(command.c_str(), "a %c %d", &i, &anti_windup);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("a")) {  // Set anti-windup flag
+    sscanf(command.c_str(), "a %c %d", &i, &anti_windup);
+    if (i == lum.get_type()) {
       my_pid.set_anti_windup(anti_windup);
       strcpy(response, "ack");
     }
-	} else if (command.startsWith("g a")) { // Get anti-windup flag
-		sscanf(command.c_str(), "g a %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g a")) {  // Get anti-windup flag
+    sscanf(command.c_str(), "g a %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "a %c %d", i, my_pid.get_anti_windup());
     }
-	} else if (command.startsWith("k")) { // Set feedback flag
-		sscanf(command.c_str(), "k %c %d", &i, &feedback);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("k")) {  // Set feedback flag
+    sscanf(command.c_str(), "k %c %d", &i, &feedback);
+    if (i == lum.get_type()) {
       my_pid.set_feedback(feedback);
       strcpy(response, "ack");
     }
-	} else if (command.startsWith("g k")) { // Get feedback flag
-		sscanf(command.c_str(), "g k %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g k")) {  // Get feedback flag
+    sscanf(command.c_str(), "g k %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "k %c %d", i, my_pid.get_feedback());
     }
-	} else if (command.startsWith("g x")) { // Get external illuminance
-		sscanf(command.c_str(), "g x %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g x")) {  // Get external illuminance
+    sscanf(command.c_str(), "g x %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "x %c %.1f", i, o);
     }
-	} else if (command.startsWith("g p")) { // Get instantaneous power
-		sscanf(command.c_str(), "g p %c", &i);
-		if (i == lum.get_type()) {
-      sprintf(response, "p %c %.1f", i, 1000*u*1/4095*PMAX);
+  } else if (command.startsWith("g p")) {  // Get instantaneous power
+    sscanf(command.c_str(), "g p %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "p %c %.1f", i, 1000 * u * 1 / 4095 * PMAX);
     }
-	} else if (command.startsWith("g t")) { //Get time since last restart
-		sscanf(command.c_str(), "g t %c", &i);
-		if (i == lum.get_type()) {
-      sprintf(response, "t %c %d", i, (millis() - initial_time) / 1000);
+  } else if (command.startsWith("g t")) {  //Get time since last restart
+    sscanf(command.c_str(), "g t %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "t %c %ld", i, (long)(millis() - initial_time) / 1000);
     }
-	} else if (command.startsWith("g e")) { // Get energy
-		sscanf(command.c_str(), "g e %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g e")) {  // Get energy
+    sscanf(command.c_str(), "g e %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "e %c %.0f", i, lum.get_total_energy_consumption());
     }
-	} else if (command.startsWith("g v")) { // Get visibility error
-		sscanf(command.c_str(), "g v %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g v")) {  // Get visibility error
+    sscanf(command.c_str(), "g v %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "v %c %.1f", i, lum.get_total_visibility_error());
     }
-	} else if (command.startsWith("g f")) { // Get flicker
-		sscanf(command.c_str(), "g f %c", &i);
-		if (i == lum.get_type()) {
+  } else if (command.startsWith("g f")) {  // Get flicker
+    sscanf(command.c_str(), "g f %c", &i);
+    if (i == lum.get_type()) {
       sprintf(response, "f %c %.1f", i, lum.get_total_flicker());
-	  }
+    }
   } else {
     strcpy(response, "err");
   }
+}
+
+//Function that iterates all the consensus stuff
+//This function should be called as soon as the pico receives
+//all the new duty cycle values (from the other picos)
+void update_consensus() {
+  //Update the duty cycles of the class with the new duty cycles received
+  //con.update_duty() must receive a vector of duty cycles
+  //vetor[0] = my_previous_duty (This is irrelevant, only the idx>0 need to be updated(id = 0 is kept unchanged inside the class))
+
+  //con.update_duty();
+
+  //Iterate the consensus algorithm
+  output = con.consensus_iterate();
+
+  //based on the output of the consensus iterate we have the new optimal value
+  //I think we only need to send my optimal duty cycle (d_now[0]), but not sure
+  //Send here the value to the other picos
+
+  //Update the average duty cycle of the class
+  con.update_average();
+
+  //Computation of the lagrangian updates
+  con.update_lagrangian();
+
+  //Finally here we gather the optimal duty cycles to compute the new reference
+  //new_reference = d[0]*luminaire_gains[0] + d[1]*luminaire_gains[1] + ... + o;
 }
 
 //*************End of code***************

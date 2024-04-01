@@ -73,8 +73,39 @@ void print_luminaires_types(char arr[], int size) {
   Serial.println("]");
 }
 
+//
+//Function to compute the dot product between two vectors.
+float dot(const float vec1[], const float vec2[], int size) {
+  float sum = 0;
+  for (int i = 0; i < size; i++) {
+    sum += vec1[i] * vec2[i];
+  }
+  return sum;
+};
+
+// Function to subtract corresponding elements of two vectors (vec1 - vec2)
+void subtractArrays(const float* vec1,const float* vec2, int size, float* result) {
+  //vec1 - vec2
+  for (int i = 0; i < size; ++i) {
+    result[i] = vec1[i] - vec2[i];
+  }
+}
+
+// Function to sum corresponding elements of two vectors (vec1 + vec2)
+void sumArrays(const float* vec1,const float* vec2, int size, float* result) {
+  //vec1 + vec2
+  for (int i = 0; i < size; ++i) {
+    result[i] = vec1[i] + vec2[i];
+  }
+}
 
 
+// Function to compute the product of a vector and a scalar
+void scalarProduct(const float* vec, int size, const float scalar,float* result) {
+    for (int i = 0; i < size; i++) {
+        result[i] = scalar*vec[i];
+    }
+}
 
 
 /////////////////////////////////////////////////////
@@ -118,8 +149,8 @@ void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_
 
   // Copy the message into the data array, filling the rest with '_'
   for (int i = 1; i < num; i++) {
-    if (msg[i-1] != '\0' && i-1 < len) {
-      frm->data[i] = msg[i-1];
+    if (msg[i - 1] != '\0' && i - 1 < len) {
+      frm->data[i] = msg[i - 1];
     } else {
       frm->data[i] = '_';
     }
@@ -137,15 +168,14 @@ void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *de
   int i;
   for (i = 1; i < *num; i++) {
     if (frm->data[i] != '_') {
-      msg[i-1] = frm->data[i];
-    }
-    else {
+      msg[i - 1] = frm->data[i];
+    } else {
       break;
     }
   }
 
   // Add null terminator to the message
-  msg[i-1] = '\0';
+  msg[i - 1] = '\0';
 }
 
 
@@ -158,15 +188,15 @@ void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *de
 
 // Command IDs for intercore communication
 typedef enum inter_core_cmds {
-    ICC_READ_DATA = 1,    // From core1 to core0: contains data read (16 bit)
-    ICC_WRITE_DATA = 2,   // From core0 to core1: contains data to write (16 bit)
-    ICC_ERROR_DATA = 3    // From core1 to core0: contains regs CANINTF, EFLG
+  ICC_READ_DATA = 1,   // From core1 to core0: contains data read (16 bit)
+  ICC_WRITE_DATA = 2,  // From core0 to core1: contains data to write (16 bit)
+  ICC_ERROR_DATA = 3   // From core1 to core0: contains regs CANINTF, EFLG
 } inter_core_cmds;
 
 // Structure for inter-core communication: CAN frame message and inter-core command
 typedef struct icc_msg {
-    can_frame frm;         // CAN frame message
-    inter_core_cmds cmd;  // Inter-core command
+  can_frame frm;        // CAN frame message
+  inter_core_cmds cmd;  // Inter-core command
 } icc_msg;
 
 
@@ -177,7 +207,7 @@ typedef struct icc_msg {
 /////////////////////////////////////////////////////
 
 // Strings to print the error flags
-char canintf_str[]{ "| MERRF | WAKIF | ERRIF | TX2IF | TX0IF | TX1IF | RX1IF | RX0IF | " }; 
+char canintf_str[]{ "| MERRF | WAKIF | ERRIF | TX2IF | TX0IF | TX1IF | RX1IF | RX0IF | " };
 char eflg_str[]{ "| RX1OV | RX0OV | TXBO | TXEP | RXEP | TXWAR | RXWAR | EWARN | " };
 
 // Function to print the error flags
