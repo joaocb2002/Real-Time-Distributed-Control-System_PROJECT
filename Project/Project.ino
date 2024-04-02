@@ -11,23 +11,28 @@
 #include <queue.h>
 #include <task.h>
 #include <stdio.h>
-#include "consensus.h"
+#include "consensus.hh"
 #include "pico/stdlib.h"
+#include <semphr.h>
 
 
 //*************Global Variables**************
-float x_ref = 50.0;                   // Reference value in LUX (default = 50)
+volatile float x_ref = 50.0;                   // Reference value in LUX (default = 50)
+volatile float o;                              // External illuminance (to be measured...)
 float r;                              // Reference value in voltage - obtained from x_ref
 float y;                              // Measured value in voltage (0-4095) - obvained from converting x to voltage
 float u;                              // Control signal in PWM (0-4095) - applied in the actuator
-float o;                              // External illuminance (to be measured...)
-unsigned long int delta_control;      // Timer variables
-volatile bool control_flag{ false };  // Timer flag for control loop
-struct repeating_timer timer;         // Timer for control loop
 time_t initial_time = millis();       // Initial time measurement
 
+//*************Global flags**************
+volatile bool control_flag {false};  // Timer flag for control loop
+volatile bool calibrated {false};               //flag to hold status of calibration of this pico
+
+//*************PID Control Variable**************
+struct repeating_timer timer;         // Timer for control loop
+
 //************* HUB Node **************
-bool hub = false;    //Flag to hold if this pico is the hub node
+volatile bool hub = false;    //Flag to hold if this pico is the hub node
 uint8_t hub_id = 0;  //Id of the hub node
 
 //*************CAN BUS**************
@@ -40,13 +45,11 @@ uint8_t eflg_save{ 0 };
 bool detected_errors{ false };
 MCP2515 can0{ spi0, 17, 19, 16, 18, 10000000 };  // CS, INT, SCK, MISO, MOSI
 
-//*************Calibration **************
+//************* Nodes Network **************
 uint8_t num_luminaires = 1;                  //Number of luminaires in the system (including me)
 uint8_t pico_id_list[MAX_LUMINAIRES] = {};   //List to hold the ids of the other picos
 char luminaire_types[MAX_LUMINAIRES] = {};   //List to hold the types of the other picos
 float luminaire_gains[MAX_LUMINAIRES] = {};  //NxN matrix to hold the values of the cross coupling gains
-bool calibrated = false;                     //flag to hold status of calibration of this pico
-bool message = false;                        //flag to hold if there is a message to be sent
 
 //******** Function prototypes *****
 void wait4start();
@@ -57,96 +60,41 @@ void read_interrupt(uint gpio, uint32_t events);
 void calibration_Hub_Node();
 void calibration_Other_Node();
 void hub_function();
-void update_consensus();
+void consensus_algorithm();
 
 
 //*************Objects**************
 CLuminaire lum;                                 //Luminaire object
 CPID my_pid(TIME_SAMPLING, 1, 1, 1, 0, 1, 10);  //Sampling time = 10ms, K = 1, b = 1, Ti = 1, Td = 0, Tt = 1, N = 10
-CONSENSUS con(luminaire_gains, o);
+CONSENSUS con(luminaire_gains, o, num_luminaires);
 consensus_out output;
 
 //*************Inter-core communication**************
-QueueHandle_t xQueue_01;  //FreeRTOS queue to store messages to be sent from core 0 to core 1
-QueueHandle_t xQueue_10;  //FreeRTOS queue to store messages to be sent from core 1 to core 0
+QueueHandle_t xQueue_UI_01;  //FreeRTOS queue to store messages to be sent from core 0 to core 1 for user interface (UI)
+QueueHandle_t xQueue_UI_10;  //FreeRTOS queue to store messages to be sent from core 1 to core 0 for user interface (UI)
+QueueHandle_t xQueue_CONS_01;   //FreeRTOS queue to store messages to be sent from core 0 to core 1 for consensus
+QueueHandle_t xQueue_CONS_10;   //FreeRTOS queue to store messages to be sent from core 1 to core 0 for consensus
+QueueHandle_t xQueue_Cal_01;    //FreeRTOS queue to store messages to be sent from core 0 to core 1 for calibration
+QueueHandle_t xQueue_Cal_10;    //FreeRTOS queue to store messages to be sent from core 1 to core 0 for calibration
 
-//*************FreeRtos Task Running on core 0**************
-void Core0_Loop(void *parameter) {
+
+//************** Mutexes ************************
+SemaphoreHandle_t xCalibrate = xSemaphoreCreateMutex();  //Mutex to protect the calibration process
+
+//*************FreeRtos Tasks Running on CORE 0**************
+
+// Task to control the PID loop
+void PID_Control_Task(void *parameter) {
   // Silence warnings about unused parameters.
   (void)parameter;
 
+  // Initialize variables
+  unsigned long int delta_control;      // Timer variables
+
   // Infinite loop
-  for (;;) {
-    //Variables initialization
-    can_frame frm;
-    icc_msg msg;
-
-    //Check if already calibrated - if not, wait for the system start message and calibrate the system
-    if (!calibrated) {
-      wait4start();
-      print_luminaires_ids(pico_id_list, num_luminaires);
-      print_luminaires_types(luminaire_types, num_luminaires);
-      calibrate_system();
-      print_crossover_gains(luminaire_gains, o, num_luminaires);
-      lum.set_G(luminaire_gains[0]);
-      calibrated = true;
-      Serial.println("Calibration done!");
-
-      //After calibration we need to send the updated gains to the consensus
-      con.update_gains(luminaire_gains, o);
-    }
-
-    //If Hub Node, call Hub Function to check for user input
-    if (hub) {
-      hub_function();
-    }
-
-    //Placeholder for the consensus update
-    /*
-    if(time to consensus){
-      update_consensus();
-    }
-    */
-
-    //Check for incoming data in xQueue10
-    while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
-
-      if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
-        if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
-
-          //Extract the message and print it
-          uint8_t src_id, dest_id, num;
-          char b[CAN_MSG_SIZE];
-          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
-          Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
-
-          //Handle message
-          if (strcmp(b, "Reset") == 0) {  //Check if the message is to reset the system
-            reset_func();                 //Reset the system (induce a reset/calibration)~
-            break;
-          } else {
-            if (hub) {  //If Hub Node, probably response to a user command. Send to serial port
-              Serial.printf("Response: %s\n", b);
-            } else {  //If not Hub Node, probably a user command, so handle it and send response
-              // Initialize response message
-              char response[CAN_MSG_SIZE];
-              handle_user_command(b, sizeof(b), response, sizeof(response));
-
-              // Send response to hub node
-              msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, src_id, response, sizeof(response));
-              msg.frm = frm;
-              msg.cmd = ICC_WRITE_DATA;
-              if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
-                Serial.printf("Sent '%s' message to node %d!\n", response, src_id);
-              }
-            }
-          }
-        }
-      }
-    }
-
+  while (1){
     //Control computation
-    if (control_flag) {
+    if (control_flag && calibrated) { //Check if it is time to control and if the system is calibrated
 
       //Check time for control loop
       delta_control = -micros();
@@ -190,13 +138,101 @@ void Core0_Loop(void *parameter) {
   }
 }
 
-//*************FreeRtos Task Running on core 1**************
-void Core1_Loop(void *parameter) {
+// Task for calibration and system initialization
+void Init_System_Task(void *parameter){
   // Silence warnings about unused parameters.
   (void)parameter;
 
   // Infinite loop
-  for (;;) {
+  while (1){
+    //Check if already calibrated - if not, wait for the system start message and calibrate the system
+    if (!calibrated) {
+      wait4start();
+      print_luminaires_ids(pico_id_list, num_luminaires);
+      print_luminaires_types(luminaire_types, num_luminaires);
+      calibrate_system();
+      print_crossover_gains(luminaire_gains, o, num_luminaires);
+      lum.set_G(luminaire_gains[0]);
+
+      // Set calibrated flag to true, using the mutex
+      calibrated = true;
+
+      //After calibration we need to send the updated gains to the consensus
+      con.update_gains(luminaire_gains, o);
+
+      // Print
+      Serial.println("Calibration done!");
+    }
+  }
+}
+
+// Task for user interface
+void User_Interface_Task(void *parameter) {
+  // Silence warnings about unused parameters.
+  (void)parameter;
+
+  //Variables initialization
+  can_frame frm;
+  icc_msg msg;
+
+  // Infinite loop
+  while (1) {
+    if (calibrated){
+
+      //If Hub Node, call Hub Function to check for user input
+      if (hub) {
+        hub_function();
+      }
+
+      //Check for incoming data in the user interface queue
+      while (xQueueReceive(xQueue_UI_10, &msg, 0) == pdTRUE) {
+        if (msg.cmd == ICC_READ_DATA) { //Check the command
+          if (msg.frm.data[0] == pico_id_list[0] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or even a broadcast)
+
+            //Extract the message and print it
+            uint8_t src_id, dest_id, num;
+            char b[CAN_MSG_SIZE];
+            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
+            Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
+
+            //Handle message
+            if (strcmp(b, "Reset") == 0) {  //Check if the message is to reset the system
+              reset_func();                 //Reset the system (induce a reset/calibration)~
+              break;
+            } else {
+              if (hub) {  //If Hub Node, probably response to a user command. Send to serial port
+                Serial.printf("Response: %s\n", b);
+              } else {  //If not Hub Node, so handle it and send response through user interface queue to hub node
+                
+                // Initialize response message
+                char response[CAN_MSG_SIZE];
+                handle_user_command(b, sizeof(b), response, sizeof(response));
+
+                // Send response to hub node
+                msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, src_id, response, sizeof(response));
+                msg.frm = frm;
+                msg.cmd = ICC_WRITE_DATA;
+                if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+                  Serial.printf("Sent '%s' message to node %d!\n", response, src_id);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
+//*************FreeRtos Tasks Running on core 1**************
+// Task to handle CAN communication
+void CAN_BUS_Task(void *parameter) {
+  // Silence warnings about unused parameters.
+  (void)parameter;
+
+  // Infinite loop
+  while(1) {
     //Variables for CAN communication
     can_frame frm;
     icc_msg msg;
@@ -208,7 +244,9 @@ void Core1_Loop(void *parameter) {
       if (can0.readMessage(MCP2515::RXB0, &frm) == MCP2515::ERROR_OK) {
         msg.frm = frm;
         msg.cmd = ICC_READ_DATA;
-        xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
+
+        //Redirect to core 0 through the right queue
+        redirect_msg_to_core0(&msg);
       }
     }
 
@@ -216,24 +254,47 @@ void Core1_Loop(void *parameter) {
       if (can0.readMessage(MCP2515::RXB1, &frm) == MCP2515::ERROR_OK) {
         msg.frm = frm;
         msg.cmd = ICC_READ_DATA;
-        xQueueSendToBack(xQueue_10, &msg, portMAX_DELAY);
+
+        //Redirect to core 0 through the right queue
+        redirect_msg_to_core0(&msg);
       }
     }
 
-    //OUTGOING DATA IN CAN BUS
-    if (xQueueReceive(xQueue_01, (void *)&msg, 0) == pdTRUE) {
+    //OUTGOING DATA IN CAN BUS - Read from every queue and send it to the CAN bus
+    while (xQueueReceive(xQueue_UI_01, (void *)&msg, 0) == pdTRUE) { //User Interface queue
       //Check the command
       if (msg.cmd == ICC_WRITE_DATA) {
         //Write the message to the CAN bus
         if (can0.sendMessage(&msg.frm) != MCP2515::ERROR_OK) {
-          Serial.println("Errors in sending...");
+          Serial.println("Errors in sending (UI)...");
+        }
+      }
+    }
+
+    while (xQueueReceive(xQueue_CONS_01, (void *)&msg, 0) == pdTRUE) { //Consensus queue
+      //Check the command
+      if (msg.cmd == ICC_WRITE_DATA) {
+        //Write the message to the CAN bus
+        if (can0.sendMessage(&msg.frm) != MCP2515::ERROR_OK) {
+          Serial.println("Errors in sending (CON)...");
+        }
+      }
+    }
+
+    while (xQueueReceive(xQueue_Cal_01, (void *)&msg, 0) == pdTRUE) { //Calibration queue
+      //Check the command
+      if (msg.cmd == ICC_WRITE_DATA) {
+        //Write the message to the CAN bus
+        if (can0.sendMessage(&msg.frm) != MCP2515::ERROR_OK) {
+          Serial.println("Errors in sending (CAL)...");
         }
       }
     }
   }
 }
 
-//*****************Setup 0****************
+
+//*****************Setups****************
 void setup() {
 
   //Get unique flash and node address - flash calls are unsafe if two cores are operating
@@ -276,17 +337,24 @@ void setup() {
   r = lum.voltage_func(x_ref);
 
   // Create queue for inter-core communication
-  xQueue_01 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 0 to core 1
-  xQueue_10 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0
+  xQueue_UI_01 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 0 to core 1
+  xQueue_UI_10 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0
+  xQueue_Cal_01 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 0 to core 1 for calibration
+  xQueue_Cal_10 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0 for calibration
+  xQueue_CONS_01 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 0 to core 1 for consensus
+  xQueue_CONS_10 = xQueueCreate(10, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0 for consensus
 
   //Launch tasks for each core
-  xTaskCreateAffinitySet(Core0_Loop, "Core0_Loop", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
-  xTaskCreateAffinitySet(Core1_Loop, "Core1_Loop", 1000, nullptr, 1, 0b10, nullptr);  //runs in core 1 only
+  xTaskCreateAffinitySet(PID_Control_Task, "PID_Control_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
+  xTaskCreateAffinitySet(Init_System_Task, "Init_System_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
+  xTaskCreateAffinitySet(User_Interface_Task, "User_Interface_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
+  xTaskCreateAffinitySet(CAN_BUS_Task, "CAN_BUS_Task", 1000, nullptr, 1, 0b10, nullptr);  //runs in core 1 only
 }
 
-//**************Setup 1*******************
+
 void setup1() {
   //Initialize CAN bus
+  delay(1000);
   can0.reset();
   can0.setBitrate(CAN_1000KBPS);
   can0.setNormalMode();
@@ -296,12 +364,15 @@ void setup1() {
   gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
 }
 
-//*************Main Loop (Core Zero)*********************
+
+//*************Main Loops*********************
 void loop() {
+  //Core 0
   vTaskDelay(100);
 }
 
 void loop1() {
+  //Core 1
   vTaskDelay(100);
 }
 /////////////////////////////////////////////////////
@@ -310,10 +381,9 @@ void loop1() {
 
 
 //************** Important System Functions **************
-
-void wait4start() {  //Function to wait for the system start message
-
-  /* The luminaire will wait and send a initial message ("Hello!")
+//Function to wait for the system start user message
+void wait4start() {  
+  /* The luminaire will wait and send a initial message ("Hello <type>")
   through the CAN BUS periodically for other picos to detect it and acknowledge it. 
   This process will only stop if a start message is received through serial port
   (which will mean that this luminaire is the Hub Luminaire) or if other
@@ -327,19 +397,19 @@ void wait4start() {  //Function to wait for the system start message
 
   while (1) {
 
-    //Every 3s, send a message to the CAN BUS saying "Hello!"
+    //Every 3s, send a message to the CAN BUS saying "Hello <type>"
     if (millis() - local_time > 3000) {
 
       // Create the message to be sent ("Hello <type>") and broadcast it
       char b[CAN_MSG_SIZE];
       char type = lum.get_type();
-      sprintf(b, "Hello %c", type);
+      sprintf(b, "Hello %c", type); //Create the message (7 bytes long - Maximum possible)
       msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
 
-      // Send the message through the xQueue01
+      // Send the message through the xQueue_UI_01
       msg.frm = frm;
       msg.cmd = ICC_WRITE_DATA;
-      if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
+      if (xQueueSendToBack(xQueue_Cal_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
         Serial.printf("Sending -> ");
         print_can_frame_msg(&msg.frm, CAN_MSG_SIZE);
       }
@@ -349,9 +419,9 @@ void wait4start() {  //Function to wait for the system start message
     }
 
     //Check for incoming data in xQueue10
-    while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+    while (xQueueReceive(xQueue_Cal_10, &msg, 0) == pdTRUE) {
       if (msg.cmd == ICC_READ_DATA) {               //Check the command
-        if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is broadcast
+        if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is broadcasted
 
           //Extract the message
           char b[CAN_MSG_SIZE];
@@ -365,7 +435,7 @@ void wait4start() {  //Function to wait for the system start message
               pico_id_list[find_id(pico_id_list, 0)] = msg.frm.can_id;  //Add the id to the list of known ids
               luminaire_types[find_type(luminaire_types, 0)] = b[6];    //Add the type to the list of known types
               num_luminaires++;                                         //Increment the number of luminaires
-              Serial.printf("NEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
+              Serial.printf("\nNEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
             }
           } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start message sent by Hub Node saying Start
             return;
@@ -386,7 +456,6 @@ void wait4start() {  //Function to wait for the system start message
 }
 
 void calibrate_system() {  //Function to calibrate the system cross coupling gains
-
   /* The calibration process is coordinated by the hub function node.
   So, all the nodes will obey to received commands, until calibration
   process is over*/
@@ -415,22 +484,18 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
-    //Print sent message 'b'
+  if (xQueueSendToBack(xQueue_Cal_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
     Serial.printf("Calibration message sent: %s\n", b);
   }
-
-  //Wait for 3 seconds for the other picos to receive their messages
-  vTaskDelay(3000);
 
   //Turn off every led (the other who receives the message will also turn off their led)
   analogWrite(LED_PIN, int(0));  //turn off my led
 
-  //Wait for 3 seconds for the other picos to turn off their leds
+  //Wait for 3 seconds for the other picos to receive their messages
   vTaskDelay(3000);
 
   // Register the external illuminance
-  Serial.println("Measuring external illuminance...");
+  Serial.println("\nMeasuring external illuminance...");
   o = lum.lux_func(analog_low_pass_filter());
 
   //Tell other picos to measure their external illuminance
@@ -438,7 +503,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  if (xQueueSendToBack(xQueue_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
+  if (xQueueSendToBack(xQueue_Cal_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
     //Print sent message 'b'
     Serial.printf("Calibration message sent: %s\n", b);
   }
@@ -462,7 +527,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
-    if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+    if (xQueueSendToBack(xQueue_Cal_01, &msg, portMAX_DELAY) == pdTRUE) {
       Serial.printf("Sent 'Calibrate %d' message!\n", pico_id_list[i]);
     }
 
@@ -473,7 +538,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     Serial.println("\nMeasuring gains...");
     luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
 
-    //Wait some time for sync (3s)
+    //Wait some time for sync (2s)
     vTaskDelay(3000);
 
     //Turn off my led
@@ -485,7 +550,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b2, sizeof(b2));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+  if (xQueueSendToBack(xQueue_Cal_01, &msg, portMAX_DELAY) == pdTRUE) {
     Serial.println("\n\nSent 'End Calibration' message!");
   }
 }
@@ -502,7 +567,7 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
   while (1) {
     //Check for incoming data in xQueue10
     icc_msg msg;
-    while (xQueueReceive(xQueue_10, &msg, 0) == pdTRUE) {
+    while (xQueueReceive(xQueue_Cal_10, &msg, 0) == pdTRUE) {
       if (msg.cmd == ICC_READ_DATA) {               //Check the command
         if (msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
           //Extract the message
@@ -520,6 +585,8 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
 
           //Check if the message is to measure external illuminance
           if (strcmp(b, "Exter") == 0) {
+            vTaskDelay(3000);
+            Serial.println("Measuring external illuminance...");
             analogWrite(LED_PIN, int(0));  //turn off my led (Redundant but just to make sure)
             o = lum.lux_func(analog_low_pass_filter());
           }
@@ -574,8 +641,12 @@ void reset_func() {  //Function to reset the system parameters: will induce a re
   my_pid.reset_pid();
 
   // Clear the queues
-  xQueueReset(xQueue_01);
-  xQueueReset(xQueue_10);
+  xQueueReset(xQueue_UI_01);
+  xQueueReset(xQueue_UI_10);
+  xQueueReset(xQueue_CONS_01);
+  xQueueReset(xQueue_CONS_10);
+  xQueueReset(xQueue_Cal_01);
+  xQueueReset(xQueue_Cal_10);
 
   // Reset the number of luminaires
   num_luminaires = 1;
@@ -597,8 +668,59 @@ void reset_func() {  //Function to reset the system parameters: will induce a re
 
   // Reset the hub flag
   hub = false;
+
+  // Turn my led off
+  analogWrite(LED_PIN, int(0));
+
+  // Set x_ref to 50 and o to 0
+  x_ref = 50.0;
+  o = 0.0;
+
+  // Resume the Init_System_Task
+  // vTaskResume(xTaskGetHandle("Init_System_Task"));
 }
 
+
+//************** Inter-core communication functions **************
+//Function to redirect a message to core 0, through the right queue
+void redirect_msg_to_core0(icc_msg *msg) {  
+
+  // Unpack the contents of the msg to a string
+  can_frame frm = msg->frm;
+  uint8_t src_id, dest_id, num;
+  char b[CAN_MSG_SIZE];
+  can_frame_to_msg(&frm, &src_id, &num, &dest_id, b);
+
+  // Parse to arduino C++ string
+  String command = String(b);
+
+  // Check the message content and decide to each queue send the message
+  if (command.startsWith("Hello")) {
+    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      return;
+    }
+  } else if (command.startsWith("Cal")) {
+    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Redirected 'Calibrate' message to core 0!\n");
+    }
+  } else if (command.startsWith("Exter")) {
+    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Redirected 'External' message to core 0!\n");
+    }
+  } else if (command.startsWith("E Cal")) {
+    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Redirected 'End Calibration' message to core 0!\n");
+    }
+  } else if (command.startsWith("S Cal")) {
+    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Redirected 'Start Calibration' message to core 0!\n");
+    }
+  } else {
+    if (xQueueSendToBack(xQueue_UI_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Redirected 'User Command' message to core 0!\n");
+    }
+  }  
+}
 
 //************** Hub Function **************
 void hub_function() {  //Function to handle user input in the hub node
@@ -623,12 +745,13 @@ void hub_function() {  //Function to handle user input in the hub node
       msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
       msg.frm = frm;
       msg.cmd = ICC_WRITE_DATA;
-      if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+      if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
         Serial.println("Sent 'Reset' message!");
       }
 
-      //Reset the my subsystem
+      //Reset my subsystem
       reset_func();
+      return;
     }
 
     // Check for which node the command is intended: each node has a unique type (A, B, C, etc. - in capital letters)
@@ -650,7 +773,6 @@ void hub_function() {  //Function to handle user input in the hub node
       user_input[USER_INPUT_MAX_SIZE - 1] = '\0';
       response[USER_INPUT_MAX_SIZE - 1] = '\0';
       Serial.printf("Received: %s\nResponse: %s\n", user_input, response);
-      message = true;
       return;
     }
 
@@ -658,7 +780,7 @@ void hub_function() {  //Function to handle user input in the hub node
     msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, node_id, user_input, sizeof(user_input));
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
-    if (xQueueSendToBack(xQueue_01, &msg, portMAX_DELAY) == pdTRUE) {
+    if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
       Serial.printf("Sent '%s' message to node %d (type %c)!\n", user_input, node_id, node_type);
     }
   }
@@ -832,31 +954,35 @@ void handle_user_command(char *user_input, int size, char *response, int respons
   }
 }
 
-//Function that iterates all the consensus stuff
-//This function should be called as soon as the pico receives
-//all the new duty cycle values (from the other picos)
-void update_consensus() {
-  //Update the duty cycles of the class with the new duty cycles received
-  //con.update_duty() must receive a vector of duty cycles
-  //vetor[0] = my_previous_duty (This is irrelevant, only the idx>0 need to be updated(id = 0 is kept unchanged inside the class))
 
-  //con.update_duty();
+//********* Consensus *********
+//Function that performs the consensus algorithm
+void consensus_algorithm() {
 
+  // Initialize variables
+  float tmp = 0;
+  
   //Iterate the consensus algorithm
-  output = con.consensus_iterate();
+  for (int i = 0; i < MAX_ITER_CONSENSUS; i++){
+    //Perform the consensus iterate
+    output = con.consensus_iterate();
 
-  //based on the output of the consensus iterate we have the new optimal value
-  //I think we only need to send my optimal duty cycle (d_now[0]), but not sure
-  //Send here the value to the other picos
+    // Exchange duties with other nodes
 
-  //Update the average duty cycle of the class
-  con.update_average();
+    // Compute average duty cycle
+    con.update_average();
 
-  //Computation of the lagrangian updates
-  con.update_lagrangian();
+    // Update langrangian terms
+    con.update_lagrangian();
+  }
 
-  //Finally here we gather the optimal duty cycles to compute the new reference
-  //new_reference = d[0]*luminaire_gains[0] + d[1]*luminaire_gains[1] + ... + o;
+  //Finally here we gather the optimal duty cycles to compute the new reference of my luminaire
+  for (int i = 0; i < num_luminaires; i++){
+    tmp +=  con.get_duty_avr(i)*luminaire_gains[i];
+  }
+
+  // Update the reference value
+  x_ref = tmp + o;
 }
 
 //*************End of code***************

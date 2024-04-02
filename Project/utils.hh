@@ -38,6 +38,9 @@ uint8_t find_type(char arr[], char type) {
 
 
 /////////////////////////////////////////////////////
+// Functions to print luminaires IDs, types, and gains
+/////////////////////////////////////////////////////
+
 // Function to print the IDs of the luminaires
 void print_luminaires_ids(uint8_t arr[], int size) {
   Serial.print("Luminaires = [ ");
@@ -73,7 +76,11 @@ void print_luminaires_types(char arr[], int size) {
   Serial.println("]");
 }
 
-//
+
+/////////////////////////////////////////////////////
+// Functions for vector operations
+/////////////////////////////////////////////////////
+
 //Function to compute the dot product between two vectors.
 float dot(const float vec1[], const float vec2[], int size) {
   float sum = 0;
@@ -98,7 +105,6 @@ void sumArrays(const float* vec1,const float* vec2, int size, float* result) {
     result[i] = vec1[i] + vec2[i];
   }
 }
-
 
 // Function to compute the product of a vector and a scalar
 void scalarProduct(const float* vec, int size, const float scalar,float* result) {
@@ -198,6 +204,14 @@ typedef struct icc_msg {
   can_frame frm;        // CAN frame message
   inter_core_cmds cmd;  // Inter-core command
 } icc_msg;
+
+/* CAN Frame struct 
+typedef struct can_frame {
+  uint32_t can_id;  /* 32 bit CAN_ID + EFF/RTR/ERR flags 
+  uint8_t can_dlc;  /* frame payload length in byte (0 .. CAN_MAX_DLEN) 
+  uint8_t data[8] __attribute__((aligned(8))); byte 0: destination node ID, bytes 1-7: message
+} can_frame; */
+
 
 
 

@@ -16,34 +16,36 @@ struct consensus_out {
 
 class CONSENSUS {
 private:
-  float d_now[MAX_LUMINAIRES] = {};  //Current duty cycle iterate values
-  float d_avg[MAX_LUMINAIRES] = {};  //The average duty cycle
+  float d_now[MAX_LUMINAIRES] = {0};  //Current duty cycle iterate values
+  float d_avg[MAX_LUMINAIRES] = {0};  //The average duty cycle
   float K[MAX_LUMINAIRES];           //Cross coupling gains
   float o;                           //external illuminance
-  float c[MAX_LUMINAIRES] = {};      //The cost value (maximum energy??)
+  float c[MAX_LUMINAIRES] = {0};      //The cost value (maximum energy: PMAX)
+  int NODE_NUM = 0;                  //Number of nodes
 
   //Linear Boundary variables
   float m = 1;
   float n = 5;
 
   //Lagrangian multipliers
-  float lambda[MAX_LUMINAIRES] = {};
-  float rho = 0;
+  float lambda[MAX_LUMINAIRES] = {0};
+  float rho = 0.2;
 
   //The output of the consensus iterate
   consensus_out result;
 
 public:
-  float l;  //illuminance value
+  float l;  //illuminance value (lower bound in lux)
 
   // Constructor
-  explicit CONSENSUS(float K_[], float o_) {
+  explicit CONSENSUS(float K_[], float o_, int _node_num) {
     //Cross-coupling gains vector
     std::copy(K_, K_ + MAX_LUMINAIRES, K);
 
     //Init values
-    c[0] = 10;  //Maximum energy here
+    c[0] = PMAX;  //Maximum energy here
     o = o_;     //External Illuminance
+    NODE_NUM = _node_num;
   };
 
   // Destructor
@@ -57,6 +59,7 @@ public:
   void update_average();
   void update_lagrangian();
   void update_duty(float d_[]);
+  float get_duty_avr(int i) { return d_avg[i]; };
 };
 
 bool CONSENSUS::check_feasibility() {
@@ -200,7 +203,7 @@ consensus_out CONSENSUS::consensus_iterate() {
   // compute minimum constrained to linear and 0 boundary
   scalarProduct(y, MAX_LUMINAIRES, 1 / rho, result1);                                                  //(1 / rho) * y
   scalarProduct(K, MAX_LUMINAIRES, 1 / m * (o - l), result2);                                          //(1 / node.m) * node.k * (node.o - node.L)
-  scalarProduct(K, MAX_LUMINAIRES, 1 / rho / m * (K[0] * y[0] - dot(y, K, MAX_LUMINAIRES)), result3);  //(1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k)
+  scalarProduct(K, MAX_LUMINAIRES, (1 / rho / m) * (K[0] * y[0] - dot(y, K, MAX_LUMINAIRES)), result3);  //(1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k)
   subtractArrays(result1, result2, MAX_LUMINAIRES, d_now);                                             //(1 / rho) * y - (1 / node.m) * node.k * (node.o - node.L)
   sumArrays(d_now, result3, MAX_LUMINAIRES, d_now);                                                    //(1 / rho) * y - (1 / node.m) * node.k * (node.o - node.L) + (1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k);
   d_now[0] = 0;
