@@ -207,12 +207,10 @@ typedef struct icc_msg {
 
 /* CAN Frame struct 
 typedef struct can_frame {
-  uint32_t can_id;  /* 32 bit CAN_ID + EFF/RTR/ERR flags 
-  uint8_t can_dlc;  /* frame payload length in byte (0 .. CAN_MAX_DLEN) 
+  uint32_t can_id;  // 32 bit CAN_ID + EFF/RTR/ERR flags 
+  uint8_t can_dlc;  // frame payload length in byte (0 .. CAN_MAX_DLEN) 
   uint8_t data[8] __attribute__((aligned(8))); byte 0: destination node ID, bytes 1-7: message
 } can_frame; */
-
-
 
 
 

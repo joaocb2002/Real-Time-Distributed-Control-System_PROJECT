@@ -21,7 +21,6 @@ private:
   float K[MAX_LUMINAIRES];           //Cross coupling gains
   float o;                           //external illuminance
   float c[MAX_LUMINAIRES] = {0};      //The cost value (maximum energy: PMAX)
-  int NODE_NUM = 0;                  //Number of nodes
 
   //Linear Boundary variables
   float m = 1;
@@ -36,6 +35,7 @@ private:
 
 public:
   float l;  //illuminance value (lower bound in lux)
+    int NODE_NUM = 0;                  //Number of nodes, detected by me
 
   // Constructor
   explicit CONSENSUS(float K_[], float o_, int _node_num) {
@@ -56,7 +56,7 @@ public:
   consensus_out consensus_iterate();
   float compute_lux();
   void update_gains(float K_[], float o_);
-  void update_average();
+  void update_average(float d_new_avg[]);
   void update_lagrangian();
   void update_duty(float d_[]);
   float get_duty_avr(int i) { return d_avg[i]; };
@@ -101,15 +101,8 @@ void CONSENSUS::update_duty(float d_[]) {
   }
 };
 
-void CONSENSUS::update_average() {
-  float sum = 0;
-  for (int i = 0; i < MAX_LUMINAIRES; i++) {
-    sum += d_now[i];
-  }
-  sum /= MAX_LUMINAIRES;
-  for (int i = 0; i < MAX_LUMINAIRES; i++) {
-    d_avg[i] = sum;
-  }
+void CONSENSUS::update_average(float d_new_avg[]) {
+  std::copy(d_new_avg, d_new_avg + MAX_LUMINAIRES, d_avg);
 }
 
 void CONSENSUS::update_lagrangian() {
