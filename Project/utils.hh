@@ -115,6 +115,18 @@ void scalarProduct(const float* vec, int size, const float scalar,float* result)
 
 
 /////////////////////////////////////////////////////
+// Other useful functions
+/////////////////////////////////////////////////////
+bool all_true_array(bool arr[], int size) {
+  for (int i = 0; i < size; i++) {
+    if (!arr[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/////////////////////////////////////////////////////
 // CAN FRAME: HELPER FUNCTIONS AND DEFINITIONS
 /////////////////////////////////////////////////////
 

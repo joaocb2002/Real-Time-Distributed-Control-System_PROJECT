@@ -35,7 +35,7 @@ private:
 
 public:
   float l;  //illuminance value (lower bound in lux)
-    int NODE_NUM = 0;                  //Number of nodes, detected by me
+    int node_num = 0;                  //Number of nodes, detected by me
 
   // Constructor
   explicit CONSENSUS(float K_[], float o_, int _node_num) {
@@ -45,7 +45,7 @@ public:
     //Init values
     c[0] = PMAX;  //Maximum energy here
     o = o_;     //External Illuminance
-    NODE_NUM = _node_num;
+    node_num = _node_num;
   };
 
   // Destructor
