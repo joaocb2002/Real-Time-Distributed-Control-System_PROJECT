@@ -229,6 +229,9 @@ consensus_out CONSENSUS::consensus_iterate() {
     }
   }
 
+  //Print duty cycle array
+  print_array((int*)result.d_best, MAX_LUMINAIRES);
+
   return result;
 };
 

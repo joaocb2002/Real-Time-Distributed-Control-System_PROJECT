@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include "consensus.hh"
 #include "pico/stdlib.h"
+#include <algorithm>
 
 
 //*************Global Variables**************
@@ -1051,7 +1052,9 @@ void send_all_duties_to_CAN() {
     // Send the message through the xQueue_CONS_01
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
-    xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
+    if (xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY) == pdTRUE) {
+      Serial.printf("Sent '%s' message!\n", b);
+    }
   }
 }
 
@@ -1062,8 +1065,7 @@ void duty_cycles_exchange() {
   icc_msg msg;
   can_frame frm;
 
-  //Array to store the received data
-  //if array[0] == 1, I have sent my data
+  //Array to store the received data: if array[0] == 1, I have sent my data
   int received_flag_array[MAX_LUMINAIRES] = { 0 };
 
   //Mike's Algorithm:
@@ -1075,24 +1077,21 @@ void duty_cycles_exchange() {
   //Then, next lowest...
 
   // Create a copy of the array to preserve the original order
-  int* sortedArr = new int[MAX_LUMINAIRES];
-  for (int i = 0; i < MAX_LUMINAIRES; i++) {
-    sortedArr[i] = pico_id_list[i];
-  }
+  int sortedArr [MAX_LUMINAIRES] = {0};
+  std::copy(pico_id_list, pico_id_list + MAX_LUMINAIRES,sortedArr);
 
   // Sort the copy of the array (using bubble sort)
-  for (int i = 0; i < MAX_LUMINAIRES - 1; ++i) {
-    for (int j = 0; j < MAX_LUMINAIRES - i - 1; ++j) {
-      if (sortedArr[j] > sortedArr[j + 1]) {
-        int temp = sortedArr[j];
-        sortedArr[j] = sortedArr[j + 1];
-        sortedArr[j + 1] = temp;
-      }
-    }
-  }
+  std::sort(std::begin(sortedArr), std::end(sortedArr));
+
+  // Print array sorted
+  Serial.print("SORTED -> ");
+  print_array(sortedArr, MAX_LUMINAIRES);
 
   //Iterate over all the KNOWN luminaires
   for (int k = 0; k < num_luminaires; k++) {
+
+    // Print the current luminaire ID
+    Serial.printf("\nCurrent Luminaire ID: %d\n", sortedArr[k]);
 
     if(sortedArr[k] == 0){
       continue;
@@ -1106,54 +1105,16 @@ void duty_cycles_exchange() {
 
     //While I have not received the kth duty cycle
     while (received_flag_array[k] < num_luminaires) {
-
-      /*
-      // Send a request to node: current_idx
-      //Create message
-      char b[CAN_MSG_SIZE];
-      strcpy(b, "ConDReq");  // "Consensus Duty Request"
-      msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, pico_id_list[current_idx], b, sizeof(b));
-
-      // Send the message through the xQueue_CONS_01
-      msg.frm = frm;
-      msg.cmd = ICC_WRITE_DATA;
-      xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
-
-      //Wait some time, to let other dudes respond
-      vTaskDelay(300);
-      */
-
-      //Check for incoming data in xQueue10
       while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
         if (msg.cmd == ICC_READ_DATA) {              //Check the command
-
-          //Check if the message is for me
-          /*
-          if (msg.frm.data[0] == pico_id_list[0]) {  
-
+          if (msg.frm.data[0] == CAN_ID_BROADCAST) {    //Check if the message is to all
             //Extract the message
             uint8_t src_id, dest_id, num, node_id;
             char b[CAN_MSG_SIZE];
             can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
 
-            //Check if message is a request to send duty cycles
-            if (strcmp(b, "ConDReq") == 0) {
-              //Send my duty cycle vector
-              send_all_duties_to_CAN();
-              received_flag_array[0] == num_luminaires;
-            }
-          }
-          */
-
-          //Check if the message is to all
-          if (msg.frm.data[0] == CAN_ID_BROADCAST) {  
-            //Extract the message
-            uint8_t src_id, dest_id, num, node_id;
-            char b[CAN_MSG_SIZE];
-            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
-
-            //Check if the message is a duty cycle from other node
-            if (strncmp(b, "Con_", 4) == 0) {
+            //Check if the message is a duty cycle from other node (correct one)
+            if (strncmp(b, "Con", 3) == 0 && src_id == sortedArr[k]) {
 
               // Extract the duty cycle value
               duty_cycles[find_id(pico_id_list, src_id)][find_id(pico_id_list, b[4])] = (uint8_t)b[6];
@@ -1162,13 +1123,12 @@ void duty_cycles_exchange() {
           }
         }
       }
-
-      print_array(received_flag_array,MAX_LUMINAIRES);
-      vTaskDelay(300);
     }
+      
+    Serial.print("RECEIVED -> ");
+    print_array(received_flag_array, MAX_LUMINAIRES);
+    vTaskDelay(100);
   }
-
-  delete[] sortedArr;
 }
 
 /*
