@@ -10,8 +10,8 @@
 #define TOL 0.001  //tolerance for rounding errors
 
 struct consensus_out {
-  float d_best[MAX_LUMINAIRES];  //Float to hold the best duty cycle
-  float cost_best;
+  float d_best[MAX_LUMINAIRES] {0};  //Float to hold the best duty cycle
+  float cost_best = 100000;
 };
 
 class CONSENSUS {
@@ -20,45 +20,59 @@ private:
   float d_avg[MAX_LUMINAIRES] = {0};  //The average duty cycle
   float K[MAX_LUMINAIRES];           //Cross coupling gains
   float o;                           //external illuminance
+  float l;  //Lower bound for illuminance
   float c[MAX_LUMINAIRES] = {0};      //The cost value (maximum energy: PMAX)
 
+  // Number of nodes in the network
+  int node_num = 0;                
+
   //Linear Boundary variables
-  float m = 1;
-  float n = 5;
+  float n;  
+  float m;  
 
   //Lagrangian multipliers
   float lambda[MAX_LUMINAIRES] = {0};
   float rho = 0.2;
 
-  //The output of the consensus iterate
-  consensus_out result;
 
 public:
-  float l;  //illuminance value (lower bound in lux)
-    int node_num = 0;                  //Number of nodes, detected by me
+  // Current output of the consensus algorithm
+  consensus_out result;
 
   // Constructor
   explicit CONSENSUS(float K_[], float o_, int _node_num) {
     //Cross-coupling gains vector
-    std::copy(K_, K_ + MAX_LUMINAIRES, K);
+    copyFloatArray(K_, MAX_LUMINAIRES,K);
 
-    //Init values
-    c[0] = PMAX;  //Maximum energy here
-    o = o_;     //External Illuminance
-    node_num = _node_num;
+    //External illuminance
+    o = o_;     
+
+    //Cost vector (by default: maximum energy for my duty cycle and 0 for the others)
+    c[0] = PMAX;  
+
+    //Number of nodes
+    node_num = _node_num; 
+
+    // Compute linear boundary variables
+    n = dot(K, K, MAX_LUMINAIRES);
+    m = n - K[0] * K[0];
   };
 
   // Destructor
   ~CONSENSUS(){};
 
+  //Methods
   bool check_feasibility();
   float evaluate_cost();
-  consensus_out consensus_iterate();
+  void consensus_iterate();
   float compute_lux();
   void update_gains(float K_[], float o_);
   void update_average(float d_new_avg[]);
   void update_lagrangian();
   void update_duty(float d_[]);
+  void print_consensus();
+  void update_lower_bound(float x_ref) { l = x_ref; };
+  void update_num_luminaires(int num) { node_num = num; };
   float get_duty_avr(int i) { return d_avg[i]; };
 };
 
@@ -72,7 +86,9 @@ bool CONSENSUS::check_feasibility() {
   if (compute_lux() < l) {
     return false;
   }
-  return true;
+  else{
+    return true;
+  }
 };
 
 //Computes the illuminance reference given the cross coupling gains and the duty cycles
@@ -91,7 +107,7 @@ float CONSENSUS::evaluate_cost() {
 };
 
 void CONSENSUS::update_gains(float K_[], float o_) {
-  std::copy(K_, K_ + MAX_LUMINAIRES, K);
+  copyFloatArray(K_, MAX_LUMINAIRES,K);
   o = o_;
 };
 
@@ -102,7 +118,7 @@ void CONSENSUS::update_duty(float d_[]) {
 };
 
 void CONSENSUS::update_average(float d_new_avg[]) {
-  std::copy(d_new_avg, d_new_avg + MAX_LUMINAIRES, d_avg);
+  copyFloatArray(d_new_avg,MAX_LUMINAIRES,d_avg);
 }
 
 void CONSENSUS::update_lagrangian() {
@@ -113,7 +129,7 @@ void CONSENSUS::update_lagrangian() {
   sumArrays(lambda, result2, MAX_LUMINAIRES, lambda);
 }
 
-consensus_out CONSENSUS::consensus_iterate() {
+void CONSENSUS::consensus_iterate() {
   result.cost_best = 100000;  //Large number
 
   bool sol_unconstrained = true;
@@ -124,12 +140,12 @@ consensus_out CONSENSUS::consensus_iterate() {
   bool sol_linear_100 = true;
 
   float cost_temp = 0;                 //Float to hold temporary computations
-  float result1[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
-  float result2[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
-  float result3[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
+  float result1[MAX_LUMINAIRES] = {0};  //Usefull to avoid memory allocations
+  float result2[MAX_LUMINAIRES] = {0};  //Usefull to avoid memory allocations
+  float result3[MAX_LUMINAIRES] = {0};  //Usefull to avoid memory allocations
 
   //Compute y
-  float y[MAX_LUMINAIRES] = {};
+  float y[MAX_LUMINAIRES] = {0};
   scalarProduct(d_avg, MAX_LUMINAIRES, rho, result1);
   subtractArrays(result1, lambda, MAX_LUMINAIRES, result2);
   subtractArrays(result2, c, MAX_LUMINAIRES, y);
@@ -142,11 +158,11 @@ consensus_out CONSENSUS::consensus_iterate() {
     //NO NEED TO COMPUTE THE OTHER
     cost_temp = evaluate_cost();
     if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
 
       //If there is unconstrained sol, no need to check others
-      return result;
+      return;
     }
   }
 
@@ -160,7 +176,7 @@ consensus_out CONSENSUS::consensus_iterate() {
   if (sol_boundary_linear) {
     cost_temp = evaluate_cost();
     if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
   }
@@ -174,7 +190,7 @@ consensus_out CONSENSUS::consensus_iterate() {
   if (sol_boundary_0) {
     cost_temp = evaluate_cost();
     if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
   }
@@ -188,7 +204,7 @@ consensus_out CONSENSUS::consensus_iterate() {
   if (sol_boundary_100) {
     cost_temp = evaluate_cost();
     if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
   }
@@ -206,7 +222,7 @@ consensus_out CONSENSUS::consensus_iterate() {
   if (sol_linear_0) {
     cost_temp = evaluate_cost();
     if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
   }
@@ -223,17 +239,45 @@ consensus_out CONSENSUS::consensus_iterate() {
   //compute cost and if best store new optimum
   if (sol_linear_100) {
     cost_temp = evaluate_cost();
-    if (cost_temp < result.cost_best) {
-      std::copy(d_now, d_now + MAX_LUMINAIRES, result.d_best);
+    if (cost_temp < result.cost_best) { 
+      copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
   }
-
-  //Print duty cycle array
-  Serial.print("D_BEST ->");
-  print_float_array(result.d_best, MAX_LUMINAIRES);
-
-  return result;
 };
+
+// Method to print all members of the class to serial port
+void CONSENSUS::print_consensus(){
+  Serial.println("\nPrinting consensus values");
+  Serial.print("d_now: ");
+  printArray(d_now, MAX_LUMINAIRES);
+  Serial.print("d_avg: ");
+  printArray(d_avg, MAX_LUMINAIRES);
+  Serial.print("K: ");
+  printArray(K, MAX_LUMINAIRES);
+  Serial.print("o: ");
+  Serial.println(o);
+  Serial.print("c: ");
+  printArray(c, MAX_LUMINAIRES);
+  Serial.print("n: ");
+  Serial.println(n,5);
+  Serial.print("m: ");
+  Serial.println(m,5);
+  Serial.print("lambda: ");
+  printArray(lambda, MAX_LUMINAIRES);
+  Serial.print("rho: ");
+  Serial.println(rho);
+  Serial.print("l: ");
+  Serial.println(l);
+  Serial.print("node_num: ");
+  Serial.println(node_num);
+  Serial.print("result.d_best: ");
+  printArray(result.d_best, MAX_LUMINAIRES);
+  Serial.print("result.cost_best: ");
+  Serial.println(result.cost_best);
+  Serial.println("End of consensus values\n\n\n");
+}
+
+
 
 #endif

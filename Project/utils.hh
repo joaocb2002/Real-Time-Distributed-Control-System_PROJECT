@@ -14,10 +14,16 @@ uint8_t find_id(uint8_t arr[], uint8_t id) {
   for (int i = 0; i < size; ++i) {
     if (arr[i] == id) {
       return i;  // If id is found, return its index
-    } else if (arr[i] == 0 && availableSlot == -1) {
+    } 
+    else if (arr[i] == 0 && availableSlot == -1) {
       availableSlot = i;  // Update available slot index if found
     }
   }
+
+  if(availableSlot == -1){
+    Serial.println("Wrong ID!");
+  }
+
   return availableSlot;  // Return available slot index if id not found
 }
 
@@ -66,6 +72,26 @@ void print_crossover_gains(float gains[], float o, int size) {
 
 //Function to print int array
 void print_array(int arr[], int size) {
+  Serial.print("Array = [ ");
+  for (int i = 0; i < size; ++i) {
+    Serial.print(arr[i]);
+    Serial.print(" ");
+  }
+  Serial.println("] ");
+}
+
+//Function to print char array
+void print_char_array(char arr[], int size) {
+  Serial.print("Array = [ ");
+  for (int i = 0; i < size; ++i) {
+    Serial.print(arr[i]);
+    Serial.print(" ");
+  }
+  Serial.println("] ");
+}
+
+//Function to print uint8_t array
+void print_uint8_t_array(uint8_t arr[], int size) {
   Serial.print("Array = [ ");
   for (int i = 0; i < size; ++i) {
     Serial.print(arr[i]);
@@ -133,6 +159,47 @@ void scalarProduct(const float* vec, int size, const float scalar, float* result
   }
 }
 
+// Function to copy the contents of one vector to another (float)
+void copyFloatArray(const float* src, int size, float* dest) {
+  for (int i = 0; i < size; i++) {
+    dest[i] = src[i];
+  }
+}
+
+// Function to copy the contents of one vector to another (uint8_t)
+void copyUint8Array(const uint8_t* src, int size, uint8_t* dest) {
+  for (int i = 0; i < size; i++) {
+    dest[i] = src[i];
+  }
+}
+
+// Function to copy the contents of one vector to another (char)
+void copyCharArray(const char* src, int size, char* dest) {
+  for (int i = 0; i < size; i++) {
+    dest[i] = src[i];
+  }
+}
+
+// Function to copy the contents of one vector to another (int)
+void copyIntArray(const int* src, int size, int* dest) {
+  for (int i = 0; i < size; i++) {
+    dest[i] = src[i];
+  }
+}
+
+// Function to print the contents of a float array
+void printArray(float arr[], int size) {
+  Serial.print("[");
+  for (int i = 0; i < size; i++) {
+    Serial.print(arr[i], 4);
+    if (i < size - 1) {
+      Serial.print(", ");
+    }
+  }
+  Serial.println("]");
+}
+
+/////////////////////////////////////////////////////
 int findNthSmallestIndex(uint8_t arr[], int size, int n) {
   if (n < 0 || n > size) {
     Serial.printf("Invalid value of n\n");
@@ -280,8 +347,20 @@ typedef struct can_frame {
   uint8_t data[8] __attribute__((aligned(8))); byte 0: destination node ID, bytes 1-7: message
 } can_frame; */
 
+/////////////////////////////////////////////////////
+// Helper functions to pack and unpack bytes to 2bytes
+/////////////////////////////////////////////////////
 
+//Packs 2 bytes into an unsigned int
+uint16_t bytes_to_msg(uint8_t ls_byte, uint8_t ms_byte) {
+uint16_t b0 {ls_byte}, b1 {ms_byte};
+return b0 + (b1 << 8);
+}
 
+//Unpacks an unsigned int into its constituting 2 bytes
+void msg_to_bytes(uint16_t num, uint8_t *byte_ls, uint8_t *byte_ms) {
+  *byte_ls = num; *byte_ms = (num >> 8);
+} 
 /////////////////////////////////////////////////////
 //Helper function to print error flags (delete this stuff?)
 /////////////////////////////////////////////////////

@@ -51,7 +51,7 @@ uint8_t num_luminaires = 1;                              //Number of luminaires 
 uint8_t pico_id_list[MAX_LUMINAIRES] = {};               //List to hold the ids of the other picos
 char luminaire_types[MAX_LUMINAIRES] = {};               //List to hold the types of the other picos
 float luminaire_gains[MAX_LUMINAIRES] = {};              //vector to hold the values of the cross coupling gains
-float duty_cycles[MAX_LUMINAIRES][MAX_LUMINAIRES] = {};  //NxN matrix to hold the values of the duty cycles
+volatile uint16_t duty_cycles[MAX_LUMINAIRES][MAX_LUMINAIRES] = {};  //NxN matrix to hold the values of the duty cycles
 
 //******** Function prototypes *****
 void wait4start();
@@ -71,8 +71,6 @@ void handle_user_command(char *command, int command_size, char *response, int re
 //*************Objects**************
 CLuminaire lum;                                 //Luminaire object
 CPID my_pid(TIME_SAMPLING, 1, 1, 1, 0, 1, 10);  //Sampling time = 10ms, K = 1, b = 1, Ti = 1, Td = 0, Tt = 1, N = 10
-CONSENSUS con(luminaire_gains, o, num_luminaires);
-consensus_out output;
 
 //*************Inter-core communication**************
 QueueHandle_t xQueue_UI_01;    //FreeRTOS queue to store messages to be sent from core 0 to core 1 for user interface (UI)
@@ -155,13 +153,10 @@ void Init_System_Task(void *parameter) {
       calibrate_system();
       print_crossover_gains(luminaire_gains, o, num_luminaires);
       lum.set_G(luminaire_gains[0]);
+      
 
       // Set calibrated flag to true, using the mutex
       calibrated = true;
-
-      //After calibration we need to send the updated gains to the consensus
-      con.update_gains(luminaire_gains, o);
-      con.node_num = num_luminaires;
 
       // Start the consensus algorithm
       consensus_flag = true;
@@ -367,6 +362,7 @@ void setup() {
   xTaskCreateAffinitySet(User_Interface_Task, "User_Interface_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
   xTaskCreateAffinitySet(Consensus_Task, "Consensus_Task", 1000, nullptr, 1, 0b01, nullptr);            //runs in core 0 only
   xTaskCreateAffinitySet(CAN_BUS_Task, "CAN_BUS_Task", 1000, nullptr, 1, 0b10, nullptr);                //runs in core 1 only
+
 }
 
 
@@ -377,9 +373,6 @@ void setup1() {
   can0.setBitrate(CAN_1000KBPS);
   can0.setNormalMode();
   can0.clearRXnOVR();
-
-  //Set up interrupt for CAN bus
-  gpio_set_irq_enabled_with_callback(interruptPin, GPIO_IRQ_EDGE_FALL, true, &read_interrupt);  //Enable interrupt
 }
 
 
@@ -453,7 +446,6 @@ void wait4start() {
               pico_id_list[find_id(pico_id_list, 0)] = msg.frm.can_id;  //Add the id to the list of known ids
               luminaire_types[find_type(luminaire_types, 0)] = b[6];    //Add the type to the list of known types
               num_luminaires++;                                         //Increment the number of luminaires
-              Serial.printf("\nNEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
             }
           } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start message sent by Hub Node saying Start
             hub_id = src_id;                     //Set the hub id
@@ -530,9 +522,8 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   //Wait for 3 seconds for the other picos to measure their external illuminance
   vTaskDelay(3000);
 
-  //Iterate over each one of the picos, turning one led on at a time and measuring gains
+  //Iterate over each one of the picos, turning o\nne led on at a time and measuring gains
   for (int i = 0; i < num_luminaires; i++) {
-    Serial.printf("\nCalibrating node %d of type %c", pico_id_list[i], luminaire_types[i]);
     if (i == 0) {
       analogWrite(LED_PIN, int(DAC_RANGE));  //turn on my led
     }
@@ -554,7 +545,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     vTaskDelay(5000);
 
     //Measure gains
-    Serial.println("\nMeasuring gains...");
+    Serial.println("Measuring gains...");
     //Added "- o" to compute the correct slope
     luminaire_gains[i] = (lum.lux_func(analog_low_pass_filter()) - o) / 100;
 
@@ -717,33 +708,19 @@ void redirect_msg_to_core0(icc_msg *msg) {
 
   // Check the message content and decide to each queue send the message
   if (command.startsWith("Hello")) {
-    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      return;
-    }
+    xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY);
   } else if (command.startsWith("Cal")) {
-    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Redirected 'Calibrate' message to core 0!\n");
-    }
+    xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY);
   } else if (command.startsWith("Exter")) {
-    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Redirected 'External' message to core 0!\n");
-    }
+    xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY);
   } else if (command.startsWith("E Cal")) {
-    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Redirected 'End Calibration' message to core 0!\n");
-    }
+    xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY);
   } else if (command.startsWith("S Cal")) {
-    if (xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Redirected 'Start Calibration' message to core 0!\n");
-    }
+    xQueueSendToBack(xQueue_Cal_10, (void *)msg, portMAX_DELAY);
   } else if (command.startsWith("Con")) {
-    if (xQueueSendToBack(xQueue_CONS_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Redirected 'Reset' message to core 0!\n");
-    }
+    xQueueSendToBack(xQueue_CONS_10, (void *)msg, portMAX_DELAY);
   } else {
-    if (xQueueSendToBack(xQueue_UI_10, (void *)msg, portMAX_DELAY) == pdTRUE) {
-      return;
-    }
+    xQueueSendToBack(xQueue_UI_10, (void *)msg, portMAX_DELAY);
   }
 }
 
@@ -916,6 +893,12 @@ void handle_user_command(char *user_input, int size, char *response, int respons
     if (i == lum.get_type()) {
       lum.set_occupancy(occupancy);
       strcpy(response, "ack");
+      if(occupancy == 0){
+        x_ref = lum.lower_bound_unocc;
+      }
+      else if(occupancy == 0){
+        x_ref = lum.lower_bound_occ;
+      }
     }
   } else if (command.startsWith("g o")) {  // Get occupancy status
     sscanf(command.c_str(), "g o %c", &i);
@@ -974,32 +957,103 @@ void handle_user_command(char *user_input, int size, char *response, int respons
     if (i == lum.get_type()) {
       sprintf(response, "f %c %.1f", i, lum.get_total_flicker());
     }
-  } else {
+  } else if (command.startsWith("g c")) {  // Get current energy cost
+    sscanf(command.c_str(), "g c %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "e %c %.1f", i, PMAX);
+    } 
+  } else if (command.startsWith("g O")) {  // Get lower bound on illuminance on occupied state
+    sscanf(command.c_str(), "g O %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "O %c %.1f", i, lum.lower_bound_occ);
+    } 
+    } else if (command.startsWith("g U")) {  // Get lower bound on illuminance on unnoccupied state
+    sscanf(command.c_str(), "g U %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "U %c %.1f", i, lum.lower_bound_unocc);
+    } 
+    }
+    else if (command.startsWith("O")) {  // Set lower bound on illuminance on occupied state
+    uint8_t bound;
+    sscanf(command.c_str(), "O %c %d", &i, &bound);
+    if (i == lum.get_type()) {
+      lum.lower_bound_occ = bound;
+      sprintf(response, "ack");
+    } 
+    } else if (command.startsWith("U")) {  // Set lower bound on illuminance on unoccupied state
+    uint8_t bound;
+    sscanf(command.c_str(), "U %c %d", &i, &bound);
+    if (i == lum.get_type()) {
+      lum.lower_bound_unocc = bound;
+      sprintf(response, "ack");
+    } 
+    } else if (command.startsWith("g L")) {  // Get the current illuminance lower bound
+    sscanf(command.c_str(), "g L %c", &i);
+    if (i == lum.get_type()) {
+      sprintf(response, "L %c %.1f", i, x_ref);
+    } 
+    }else if (command.startsWith("c")) {  // Get lower bound on illuminance on occupied state
+    uint8_t cost;
+    sscanf(command.c_str(), "c %c %d", &i, &cost);
+    if (i == lum.get_type()) {
+      lum.lower_bound_occ = cost;
+      sprintf(response, "ack");
+    } 
+    }
+  
+  else {
     strcpy(response, "err");
   }
 }
+
 
 
 //********* Consensus *********
 //Function that performs the consensus algorithm
 void consensus_algorithm() {
 
+  // Initialize the consensus object with the gains 
+  CONSENSUS con(luminaire_gains, o, num_luminaires);
+  con.update_lower_bound(x_ref);
+
   // Initialize variables
   float tmp_l = 0;
   float d_new_avg[MAX_LUMINAIRES] = {};
+  uint16_t best_duties_temp[MAX_LUMINAIRES] = {};
+
+  //Print consensus algorithm start
+  con.print_consensus();
 
   //Iterate the consensus algorithm
   for (int i = 0; i < MAX_ITER_CONSENSUS; i++) {
 
     //Perform the consensus iterate
-    output = con.consensus_iterate();
+    con.consensus_iterate();
 
-    //Update the duty cycle matrix with my values
-    //The matrix is updated with the other values as soon as they have been received
-    std::copy(output.d_best, output.d_best + MAX_LUMINAIRES, duty_cycles[0]);
+    //Print the results of the iteration
+    Serial.printf("Iteration: %d", i);
+    for(int j = 0; j < MAX_LUMINAIRES; j++){
+      Serial.printf(" %f", con.result.d_best[j]);
+      duty_cycles[0][j] = (uint16_t) con.result.d_best[j];
+    }
+
+    //Update the duty cycle matrix with my values in row 0~
+      for (int j = 0; j < num_luminaires; j++) {
+      best_duties_temp[j] = (uint16_t)con.result.d_best[j];
+    }
+    
 
     //Duty cycle exchange
-    duty_cycles_exchange();
+    duty_cycles_exchange(best_duties_temp, MAX_LUMINAIRES);
+
+    // Print the duty cycles matrix
+    Serial.println("Duty Cycles Matrix:");
+    for (int j = 0; j < num_luminaires; j++) {
+      for (int k = 0; k < num_luminaires; k++) {
+        Serial.printf("%d ", duty_cycles[j][k]);
+      }
+      Serial.println();
+    }
 
     // Compute average duty cycle vector
     for (int i = 0; i < num_luminaires; i++) {
@@ -1014,8 +1068,18 @@ void consensus_algorithm() {
     //Update the average of the consensus
     con.update_average(d_new_avg);
 
+    //Print the average of the consensus
+    Serial.println("Average of the consensus:");
+    for (int j = 0; j < num_luminaires; j++) {
+      Serial.printf("%f ", d_new_avg[j]);
+    }
+
     // Update langrangian terms
     con.update_lagrangian();
+    Serial.print("\n\n");
+
+    // Delay
+    vTaskDelay(500);
   }
 
   //Finally here we gather the optimal duty cycles to compute the new reference of my luminaire
@@ -1032,34 +1096,39 @@ void consensus_algorithm() {
 //******** Consensus helper functions*****
 
 // Function to send all duties to CAN
-void send_all_duties_to_CAN() {
+void send_all_duties_to_CAN(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tmp){
 
   // Initialize variables
   icc_msg msg;
-  can_frame frm;
+  can_frame frm; 
 
   // Send my duty cycle vector to the other nodes
-  for (int i = 0; i < num_luminaires; i++) {
-    //Create message: "Con____"
+  for (int i = 0; i < num_luminaires; i++){
+  //Create message: "Con____"
     char b[CAN_MSG_SIZE];
     strcpy(b, "Con____");              //  bytes: 7 to indicate CON message, 4 to store the node id to turn on
-    b[4] = pico_id_list[i];            // Store the node id of which the duty cycle is referring to
-    b[6] = (uint8_t)output.d_best[i];  // Store the duty cycle value
+    uint16_t duty = best_duties_temp[i];  // Store the duty cycle value
+    b[3] = pico_id_list[i];            // Store the node id of which the duty cycle is referring to
 
-    // Send message to warn other picos to measure gains (and the corresponding one to turn on its own led)
+    // Store the duty cycle value in 2 bytes
+
+    msg_to_bytes(duty, (uint8_t*)&b[4], (uint8_t*)&b[5]);
+
+    // Send message to send local duty cycle to the other nodes
     msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
 
     // Send the message through the xQueue_CONS_01
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
-    if (xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Sent '%c%c%c%d%c%d%c%c' message!\n", b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]);
-    }
+    xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
+
+    // Delay
+    vTaskDelay(250);
   }
 }
 
 // Function to exchange all duty cicles from/to CAN-BUS
-void duty_cycles_exchange() {
+void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tmp) {
 
   // Initialize variables
   icc_msg msg;
@@ -1068,43 +1137,28 @@ void duty_cycles_exchange() {
   //Array to store the received data: if array[0] == 1, I have sent my data
   int received_flag_array[MAX_LUMINAIRES] = { 0 };
 
-  //Mike's Algorithm:
-  //Each node is aware of other node ids
-  //We loop through each luminaire, in ascending order
-  //i.e. the node with the smallest id has priority in sending
-  //Each other node sends a request to the id with lowest id
-  //Lowest id sends its duty cycles
-  //Then, next lowest...
-
   // Create a copy of the array to preserve the original order
-  int sortedArr [MAX_LUMINAIRES] = {0};
-  std::copy(pico_id_list, pico_id_list + MAX_LUMINAIRES,sortedArr);
+  uint8_t sortedArr [MAX_LUMINAIRES] = {0};
+  copyUint8Array(pico_id_list,MAX_LUMINAIRES,sortedArr);
 
   // Sort the copy of the array (using bubble sort)
   std::sort(std::begin(sortedArr), std::end(sortedArr));
 
-  // Print array sorted
-  Serial.print("SORTED -> ");
-  print_array(sortedArr, MAX_LUMINAIRES);
-
-  //Iterate over all the KNOWN luminaires
+  //Iterate over all the luminaires
   for (int k = 0; k < MAX_LUMINAIRES; k++) {
-
-    // Print the current luminaire ID
-    Serial.printf("\nCurrent Luminaire ID: %d\n", sortedArr[k]);
 
     if(sortedArr[k] == 0){
       continue;
     }
 
     if(sortedArr[k] == pico_id_list[0]){
-      send_all_duties_to_CAN();
-      received_flag_array[0] == num_luminaires;
+      send_all_duties_to_CAN(best_duties_temp, size_tmp);
+      received_flag_array[0] = num_luminaires;
       continue;
     }
 
     //While I have not received the kth duty cycle
-    while (received_flag_array[k] < num_luminaires) {
+    while (received_flag_array[find_id(pico_id_list, sortedArr[k])] < num_luminaires) {
       while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
         if (msg.cmd == ICC_READ_DATA) {              //Check the command
           if (msg.frm.data[0] == CAN_ID_BROADCAST) {    //Check if the message is to all
@@ -1113,21 +1167,21 @@ void duty_cycles_exchange() {
             char b[CAN_MSG_SIZE];
             can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
 
+            // Parse the message
+            uint16_t duty_value = bytes_to_msg((uint8_t)b[4], (uint8_t)b[5]);
+            
             //Check if the message is a duty cycle from other node (correct one)
             if (strncmp(b, "Con", 3) == 0 && src_id == sortedArr[k]) {
-
               // Extract the duty cycle value
-              duty_cycles[find_id(pico_id_list, src_id)][find_id(pico_id_list, b[4])] = (uint8_t)b[6];
+              duty_cycles[find_id(pico_id_list, src_id)][find_id(pico_id_list, (uint8_t)b[3])] = duty_value;
               received_flag_array[find_id(pico_id_list, src_id)]++;
             }
           }
         }
       }
     }
-      
-    Serial.print("RECEIVED -> ");
-    print_array(received_flag_array, MAX_LUMINAIRES);
-    vTaskDelay(100);
+    // Delay
+    vTaskDelay(250);
   }
 }
 

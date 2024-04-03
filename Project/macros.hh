@@ -2,7 +2,7 @@
 #define MACROS_HH
 
 // Macros for consensus algorithm
-#define MAX_ITER_CONSENSUS 50
+#define MAX_ITER_CONSENSUS 20
 
 // Macros for user input
 #define USER_INPUT_MAX_SIZE 8 // Maximum size of user input: 7 characters + '\0'
@@ -16,7 +16,7 @@
 
 // Macros for board configuration
 #define LED_PIN 15
-#define LDR_PIN A1
+#define LDR_PIN A2
 #define PWM_FREQ 60000
 #define DAC_RANGE 4095
 #define SERIAL_BAUD 115200

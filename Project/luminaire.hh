@@ -13,8 +13,6 @@ private:
 
   // Specific private member variables
   bool occupied = false;  // True if the luminaire is occupied, false otherwise
-  float lower_bound_occ = 0;  // Lower bound of lux in occupied state
-  float lower_bound_unocc = 0;  // Upper bound of lux in unoccupied state
   double G;               // Open loop gain of LED subsystem
   double H;               // Open loop gain of sensor subsystem (computed every iteration because depends on LUX value)
   double tau;             // Time constant of sensor subsystem (computed every iteration because depends on LUX value)
@@ -35,6 +33,8 @@ private:
 
 
 public:
+  float lower_bound_occ = 50;  // Lower bound of lux in occupied state
+  float lower_bound_unocc = 0;  // Upper bound of lux in unoccupied state
 
   // Public member variables
 
@@ -56,8 +56,8 @@ public:
     last_duty_cycle = 0;
     last_last_duty_cycle = 0;
     N = 0;
-    lower_bound_occ = 0;
-    lower_bound_unocc = 0;
+    //lower_bound_occ = 0;
+    //lower_bound_unocc = 0;
     for (int i = 0; i < 6000; i++) {
       last_minute_energy[i] = 0;
       last_minute_visibility_error[i] = 0;
