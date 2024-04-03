@@ -24,8 +24,8 @@ float u;                         // Control signal in PWM (0-4095) - applied in 
 time_t initial_time = millis();  // Initial time measurement
 
 //*************Global flags**************
-volatile bool control_flag{ false };  // Timer flag for control loop
-volatile bool calibrated{ false };    //flag to hold status of calibration of this pico
+volatile bool control_flag{ false };    // Timer flag for control loop
+volatile bool calibrated{ false };      //flag to hold status of calibration of this pico
 volatile bool consensus_flag{ false };  //Flag to hold if it is time to run the consensus algorithm
 
 //*************PID Control Variable**************
@@ -353,12 +353,12 @@ void setup() {
   r = lum.voltage_func(x_ref);
 
   // Create queue for inter-core communication
-  xQueue_UI_01 = xQueueCreate(10, sizeof(icc_msg));    //FreeRTOS queue to store messages to be sent from core 0 to core 1
-  xQueue_UI_10 = xQueueCreate(10, sizeof(icc_msg));    //FreeRTOS queue to store messages to be sent from core 1 to core 0
-  xQueue_Cal_01 = xQueueCreate(10, sizeof(icc_msg));   //FreeRTOS queue to store messages to be sent from core 0 to core 1 for calibration
-  xQueue_Cal_10 = xQueueCreate(10, sizeof(icc_msg));   //FreeRTOS queue to store messages to be sent from core 1 to core 0 for calibration
-  xQueue_CONS_01 = xQueueCreate(MAX_LUMINAIRES, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 0 to core 1 for consensus
-  xQueue_CONS_10 = xQueueCreate(MAX_LUMINAIRES*MAX_LUMINAIRES, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0 for consensus
+  xQueue_UI_01 = xQueueCreate(10, sizeof(icc_msg));                                 //FreeRTOS queue to store messages to be sent from core 0 to core 1
+  xQueue_UI_10 = xQueueCreate(10, sizeof(icc_msg));                                 //FreeRTOS queue to store messages to be sent from core 1 to core 0
+  xQueue_Cal_01 = xQueueCreate(10, sizeof(icc_msg));                                //FreeRTOS queue to store messages to be sent from core 0 to core 1 for calibration
+  xQueue_Cal_10 = xQueueCreate(10, sizeof(icc_msg));                                //FreeRTOS queue to store messages to be sent from core 1 to core 0 for calibration
+  xQueue_CONS_01 = xQueueCreate(MAX_LUMINAIRES, sizeof(icc_msg));                   //FreeRTOS queue to store messages to be sent from core 0 to core 1 for consensus
+  xQueue_CONS_10 = xQueueCreate(MAX_LUMINAIRES * MAX_LUMINAIRES, sizeof(icc_msg));  //FreeRTOS queue to store messages to be sent from core 1 to core 0 for consensus
 
   //Launch tasks for each core
   xTaskCreateAffinitySet(PID_Control_Task, "PID_Control_Task", 1000, nullptr, 1, 0b01, nullptr);        //runs in core 0 only
@@ -455,7 +455,7 @@ void wait4start() {
               Serial.printf("\nNEW NODE ID: %d\nNEW NODE TYPE: %c", int(msg.frm.can_id), b[6]);
             }
           } else if (strcmp(b, "S Cal") == 0) {  //Check if the message is a start message sent by Hub Node saying Start
-            hub_id = src_id;                      //Set the hub id
+            hub_id = src_id;                     //Set the hub id
             return;
           }
         }
@@ -554,7 +554,8 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
 
     //Measure gains
     Serial.println("\nMeasuring gains...");
-    luminaire_gains[i] = lum.lux_func(analog_low_pass_filter()) / 100;
+    //Added "- o" to compute the correct slope
+    luminaire_gains[i] = (lum.lux_func(analog_low_pass_filter()) - o) / 100;
 
     //Wait some time for sync (2s)
     vTaskDelay(3000);
@@ -571,6 +572,10 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   if (xQueueSendToBack(xQueue_Cal_01, &msg, portMAX_DELAY) == pdTRUE) {
     Serial.println("\n\nSent 'End Calibration' message!");
   }
+
+  //Clear the calibration queues
+  xQueueReset(xQueue_Cal_01);
+  xQueueReset(xQueue_Cal_10);
 }
 
 void calibration_Other_Node() {  //Function to calibrate the system cross coupling gains (other nodes)
@@ -984,7 +989,7 @@ void consensus_algorithm() {
 
   //Iterate the consensus algorithm
   for (int i = 0; i < MAX_ITER_CONSENSUS; i++) {
-    
+
     //Perform the consensus iterate
     output = con.consensus_iterate();
 
@@ -996,10 +1001,9 @@ void consensus_algorithm() {
     duty_cycles_exchange();
 
     // Compute average duty cycle vector
-    for(int i = 0; i < num_luminaires;i++){
+    for (int i = 0; i < num_luminaires; i++) {
       float sum = 0;
-      for(int k = 0; k < num_luminaires;k++)
-      {
+      for (int k = 0; k < num_luminaires; k++) {
         sum += duty_cycles[k][i];
       }
       sum /= num_luminaires;
@@ -1026,8 +1030,8 @@ void consensus_algorithm() {
 
 //******** Consensus helper functions*****
 
-// Function to send all duties to CAN 
-void send_all_duties_to_CAN(){
+// Function to send all duties to CAN
+void send_all_duties_to_CAN() {
 
   // Initialize variables
   icc_msg msg;
@@ -1037,8 +1041,8 @@ void send_all_duties_to_CAN(){
   for (int i = 0; i < num_luminaires; i++) {
     //Create message: "Con____"
     char b[CAN_MSG_SIZE];
-    strcpy(b, "Con____"); // 7 bytes: 3 to indicate CON message, 4 to store the node id to turn on
-    b[4] = pico_id_list[i];  // Store the node id of which the duty cycle is referring to
+    strcpy(b, "Con____");              // 7 bytes: 3 to indicate CON message, 4 to store the node id to turn on
+    b[4] = pico_id_list[i];            // Store the node id of which the duty cycle is referring to
     b[6] = (uint8_t)output.d_best[i];  // Store the duty cycle value
 
     // Send message to warn other picos to measure gains (and the corresponding one to turn on its own led)
@@ -1050,33 +1054,137 @@ void send_all_duties_to_CAN(){
     xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
   }
 }
-  
-// Function to exchange all duty cicles from/to CAN-BUS
-void duty_cycles_exchange(){
-  /* Similarly to hub function, this procedure will be
-  coordinated by the one and only Hub Node*/
-  if (hub){
-    // Give orders
-    duty_cycles_Hub_Node();
-  } else {
-    //Wait for orders
-    duty_cycles_Other_Node();
-  }
-}
 
-// Function to exchange duty cycles in the other nodes
-void duty_cycles_Other_Node(){
+// Function to exchange all duty cicles from/to CAN-BUS
+void duty_cycles_exchange() {
 
   // Initialize variables
   icc_msg msg;
   can_frame frm;
-  int received[num_luminaires] = {0};
+
+  //Array to store the received data
+  //if array[0] == 1, I have sent my data
+  int received_flag_array[MAX_LUMINAIRES] = { 0 };
+
+  //Mike's Algorithm:
+  //Each node is aware of other node ids
+  //We loop through each luminaire, in ascending order
+  //i.e. the node with the smallest id has priority in sending
+  //Each other node sends a request to the id with lowest id
+  //Lowest id sends its duty cycles
+  //Then, next lowest...
+
+  // Create a copy of the array to preserve the original order
+  int* sortedArr = new int[MAX_LUMINAIRES];
+  for (int i = 0; i < MAX_LUMINAIRES; i++) {
+    sortedArr[i] = pico_id_list[i];
+  }
+
+  // Sort the copy of the array (using bubble sort)
+  for (int i = 0; i < MAX_LUMINAIRES - 1; ++i) {
+    for (int j = 0; j < MAX_LUMINAIRES - i - 1; ++j) {
+      if (sortedArr[j] > sortedArr[j + 1]) {
+        int temp = sortedArr[j];
+        sortedArr[j] = sortedArr[j + 1];
+        sortedArr[j + 1] = temp;
+      }
+    }
+  }
+
+  //Iterate over all the KNOWN luminaires
+  for (int k = 0; k < num_luminaires; k++) {
+
+    if(sortedArr[k] == 0){
+      continue;
+    }
+
+    if(sortedArr[k] == pico_id_list[0]){
+      send_all_duties_to_CAN();
+      received_flag_array[0] == num_luminaires;
+      continue;
+    }
+
+    //While I have not received the kth duty cycle
+    while (received_flag_array[k] < num_luminaires) {
+
+      /*
+      // Send a request to node: current_idx
+      //Create message
+      char b[CAN_MSG_SIZE];
+      strcpy(b, "ConDReq");  // "Consensus Duty Request"
+      msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, pico_id_list[current_idx], b, sizeof(b));
+
+      // Send the message through the xQueue_CONS_01
+      msg.frm = frm;
+      msg.cmd = ICC_WRITE_DATA;
+      xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
+
+      //Wait some time, to let other dudes respond
+      vTaskDelay(300);
+      */
+
+      //Check for incoming data in xQueue10
+      while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
+        if (msg.cmd == ICC_READ_DATA) {              //Check the command
+
+          //Check if the message is for me
+          /*
+          if (msg.frm.data[0] == pico_id_list[0]) {  
+
+            //Extract the message
+            uint8_t src_id, dest_id, num, node_id;
+            char b[CAN_MSG_SIZE];
+            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
+
+            //Check if message is a request to send duty cycles
+            if (strcmp(b, "ConDReq") == 0) {
+              //Send my duty cycle vector
+              send_all_duties_to_CAN();
+              received_flag_array[0] == num_luminaires;
+            }
+          }
+          */
+
+          //Check if the message is to all
+          if (msg.frm.data[0] == CAN_ID_BROADCAST) {  
+            //Extract the message
+            uint8_t src_id, dest_id, num, node_id;
+            char b[CAN_MSG_SIZE];
+            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
+
+            //Check if the message is a duty cycle from other node
+            if (strncmp(b, "Con_", 4) == 0) {
+
+              // Extract the duty cycle value
+              duty_cycles[find_id(pico_id_list, src_id)][find_id(pico_id_list, b[4])] = (uint8_t)b[6];
+              received_flag_array[find_id(pico_id_list, src_id)]++;
+            }
+          }
+        }
+      }
+
+      print_array(received_flag_array,MAX_LUMINAIRES);
+      vTaskDelay(300);
+    }
+  }
+
+  delete[] sortedArr;
+}
+
+/*
+// Function to exchange duty cycles in the other nodes
+void duty_cycles_Other_Node() {
+
+  // Initialize variables
+  icc_msg msg;
+  can_frame frm;
+  int received[num_luminaires] = { 0 };
 
   // Wait for the hub node to broadcast the duty cycles
   while (1) {
     //Check for incoming data in xQueue10
     while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
-      if (msg.cmd == ICC_READ_DATA) {               //Check the command
+      if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
         if (msg.frm.data[0] == CAN_ID_BROADCAST || msg.frm.data[0] == pico_id_list[0]) {  //Check if the message is broadcasted (or for me)
 
           //Extract the message
@@ -1121,7 +1229,7 @@ void duty_cycles_Other_Node(){
 }
 
 // Function to exchange duty cycles in the hub node
-void duty_cycles_Hub_Node(){
+void duty_cycles_Hub_Node() {
 
   // Initialize variables
   icc_msg msg;
@@ -1131,18 +1239,17 @@ void duty_cycles_Hub_Node(){
   for (int i = 0; i < num_luminaires; i++) {
 
     // Initialize variables
-    bool received_flag_array[num_luminaires] = {false};
+    bool received_flag_array[num_luminaires] = { false };
     int counter = 0;
 
     // If my turn, broadcast my duty cycles
     if (i == 0) {
       send_all_duties_to_CAN();
       received_flag_array[0] = true;
-    }
-    else { // Send a request to node i
+    } else {  // Send a request to node i
       //Create message
       char b[CAN_MSG_SIZE];
-      strcpy(b, "ConDReq"); // "Consensus Duty Request"
+      strcpy(b, "ConDReq");  // "Consensus Duty Request"
       msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, pico_id_list[i], b, sizeof(b));
 
       // Send the message through the xQueue_CONS_01
@@ -1152,10 +1259,10 @@ void duty_cycles_Hub_Node(){
     }
 
     //Wait for confirmation of other nodes of the reception of the duty cycles of current node
-    while(all_true_array(received_flag_array, num_luminaires) == false){
+    while (all_true_array(received_flag_array, num_luminaires) == false) {
       //Check for incoming data in xQueue10
       while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
-        if (msg.cmd == ICC_READ_DATA) {               //Check the command
+        if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
           if (msg.frm.data[0] == pico_id_list[i] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
             //Extract the message
             uint8_t src_id, dest_id, num, node_id;
@@ -1167,7 +1274,7 @@ void duty_cycles_Hub_Node(){
               received_flag_array[find_id(pico_id_list, msg.frm.can_id)] = true;
             }
 
-            // If message is a duty cycle from the requested node 
+            // If message is a duty cycle from the requested node
             if (strncmp(b, "Con_", 4) == 0) {
 
               // Extract the duty cycle value
@@ -1175,7 +1282,7 @@ void duty_cycles_Hub_Node(){
               counter++;
 
               // Mark my receipt of the duty cycle and of the other node's receipt
-              if (counter == num_luminaires){
+              if (counter == num_luminaires) {
                 received_flag_array[0] = true;
               }
             }
@@ -1193,9 +1300,9 @@ void duty_cycles_Hub_Node(){
   xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
 }
 
-    
+*/
 
-  
+
 
 
 //*************End of code***************

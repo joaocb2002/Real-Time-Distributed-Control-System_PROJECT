@@ -64,6 +64,16 @@ void print_crossover_gains(float gains[], float o, int size) {
   Serial.println(o);
 }
 
+//Function to print int array
+void print_array(int arr[], int size) {
+  Serial.print("Array = [ ");
+  for (int i = 0; i < size; ++i) {
+    Serial.print(arr[i]);
+    Serial.print(" ");
+  }
+  Serial.println("] ");
+}
+
 // Function to print the types of the luminaires
 void print_luminaires_types(char arr[], int size) {
   Serial.print("Luminaires types = [ ");
@@ -91,7 +101,7 @@ float dot(const float vec1[], const float vec2[], int size) {
 };
 
 // Function to subtract corresponding elements of two vectors (vec1 - vec2)
-void subtractArrays(const float* vec1,const float* vec2, int size, float* result) {
+void subtractArrays(const float* vec1, const float* vec2, int size, float* result) {
   //vec1 - vec2
   for (int i = 0; i < size; ++i) {
     result[i] = vec1[i] - vec2[i];
@@ -99,7 +109,7 @@ void subtractArrays(const float* vec1,const float* vec2, int size, float* result
 }
 
 // Function to sum corresponding elements of two vectors (vec1 + vec2)
-void sumArrays(const float* vec1,const float* vec2, int size, float* result) {
+void sumArrays(const float* vec1, const float* vec2, int size, float* result) {
   //vec1 + vec2
   for (int i = 0; i < size; ++i) {
     result[i] = vec1[i] + vec2[i];
@@ -107,10 +117,46 @@ void sumArrays(const float* vec1,const float* vec2, int size, float* result) {
 }
 
 // Function to compute the product of a vector and a scalar
-void scalarProduct(const float* vec, int size, const float scalar,float* result) {
-    for (int i = 0; i < size; i++) {
-        result[i] = scalar*vec[i];
+void scalarProduct(const float* vec, int size, const float scalar, float* result) {
+  for (int i = 0; i < size; i++) {
+    result[i] = scalar * vec[i];
+  }
+}
+
+int findNthSmallestIndex(uint8_t arr[], int size, int n) {
+  if (n < 0 || n > size) {
+    Serial.printf("Invalid value of n\n");
+    return -1;
+  }
+
+  // Create a copy of the array to preserve the original order
+  int* sortedArr = new int[size];
+  for (int i = 0; i < size; ++i) {
+    sortedArr[i] = arr[i];
+  }
+
+  // Sort the copy of the array (using bubble sort)
+  for (int i = 0; i < size - 1; ++i) {
+    for (int j = 0; j < size - i - 1; ++j) {
+      if (sortedArr[j] > sortedArr[j + 1]) {
+        int temp = sortedArr[j];
+        sortedArr[j] = sortedArr[j + 1];
+        sortedArr[j + 1] = temp;
+      }
     }
+  }
+
+  // Find the index of the nth smallest element in the original array
+  int index = -1;
+  for (int i = 0; i < size; ++i) {
+    if (arr[i] == sortedArr[n]) {
+      index = i;
+      break;
+    }
+  }
+
+  delete[] sortedArr;
+  return index;
 }
 
 
@@ -131,7 +177,7 @@ bool all_true_array(bool arr[], int size) {
 /////////////////////////////////////////////////////
 
 // Function to initialize a CAN frame message with a given id and number of bytes
-void init_can_frame(can_frame *frm, uint8_t id, uint8_t num) {
+void init_can_frame(can_frame* frm, uint8_t id, uint8_t num) {
   frm->can_id = id;
   frm->can_dlc = num;
 
@@ -141,7 +187,7 @@ void init_can_frame(can_frame *frm, uint8_t id, uint8_t num) {
 }
 
 // Function to print the contents of a CAN frame
-void print_can_frame_msg(can_frame *frm, uint8_t num) {
+void print_can_frame_msg(can_frame* frm, uint8_t num) {
   Serial.print("ID: ");
   Serial.print(frm->can_id, HEX);
   Serial.print(" DLC: ");
@@ -157,7 +203,7 @@ void print_can_frame_msg(can_frame *frm, uint8_t num) {
 }
 
 // Function to convert a message into a CAN frame
-void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_id, char *msg, int len) {
+void msg_to_can_frame(can_frame* frm, uint8_t src_id, uint8_t num, uint8_t dest_id, char* msg, int len) {
   // Set can_id to the source node ID and can_dlc to the number of bytes
   frm->can_id = src_id;
   frm->can_dlc = num;
@@ -176,7 +222,7 @@ void msg_to_can_frame(can_frame *frm, uint8_t src_id, uint8_t num, uint8_t dest_
 }
 
 // Function to convert a CAN frame into a message
-void can_frame_to_msg(can_frame *frm, uint8_t *src_id, uint8_t *num, uint8_t *dest_id, char *msg) {
+void can_frame_to_msg(can_frame* frm, uint8_t* src_id, uint8_t* num, uint8_t* dest_id, char* msg) {
   // Set the source node ID, number of bytes, and destination node ID
   *src_id = frm->can_id;
   *num = frm->can_dlc;
