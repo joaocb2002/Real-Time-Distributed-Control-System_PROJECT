@@ -230,7 +230,8 @@ consensus_out CONSENSUS::consensus_iterate() {
   }
 
   //Print duty cycle array
-  print_array((int*)result.d_best, MAX_LUMINAIRES);
+  Serial.print("D_BEST ->");
+  print_float_array(result.d_best, MAX_LUMINAIRES);
 
   return result;
 };

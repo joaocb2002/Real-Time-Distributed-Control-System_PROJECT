@@ -1042,7 +1042,7 @@ void send_all_duties_to_CAN() {
   for (int i = 0; i < num_luminaires; i++) {
     //Create message: "Con____"
     char b[CAN_MSG_SIZE];
-    strcpy(b, "Con____");              // 7 bytes: 3 to indicate CON message, 4 to store the node id to turn on
+    strcpy(b, "Con____");              //  bytes: 7 to indicate CON message, 4 to store the node id to turn on
     b[4] = pico_id_list[i];            // Store the node id of which the duty cycle is referring to
     b[6] = (uint8_t)output.d_best[i];  // Store the duty cycle value
 
@@ -1053,7 +1053,7 @@ void send_all_duties_to_CAN() {
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
     if (xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Sent '%s' message!\n", b);
+      Serial.printf("Sent '%c%c%c%d%c%d%c%c' message!\n", b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]);
     }
   }
 }
@@ -1088,7 +1088,7 @@ void duty_cycles_exchange() {
   print_array(sortedArr, MAX_LUMINAIRES);
 
   //Iterate over all the KNOWN luminaires
-  for (int k = 0; k < num_luminaires; k++) {
+  for (int k = 0; k < MAX_LUMINAIRES; k++) {
 
     // Print the current luminaire ID
     Serial.printf("\nCurrent Luminaire ID: %d\n", sortedArr[k]);

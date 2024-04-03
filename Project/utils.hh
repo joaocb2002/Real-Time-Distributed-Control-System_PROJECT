@@ -74,6 +74,16 @@ void print_array(int arr[], int size) {
   Serial.println("] ");
 }
 
+//Function to print float array
+void print_float_array(float arr[], int size) {
+  Serial.print("Array = [ ");
+  for (int i = 0; i < size; ++i) {
+    Serial.print(arr[i]);
+    Serial.print(" ");
+  }
+  Serial.println("] ");
+}
+
 // Function to print the types of the luminaires
 void print_luminaires_types(char arr[], int size) {
   Serial.print("Luminaires types = [ ");
