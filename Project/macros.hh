@@ -7,6 +7,9 @@
 //Time between streamed value
 #define STREAM_TIME 10000 //microseconds
 
+//The size of the minute buffer
+#define BUFFER_SIZE 600 //10 items/s
+
 // Macros for user input
 #define USER_INPUT_MAX_SIZE 8 // Maximum size of user input: 7 characters + '\0'
 
