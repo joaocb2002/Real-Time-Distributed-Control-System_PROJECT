@@ -293,11 +293,5 @@ void CONSENSUS::print_lagrangian(){
   printArray(lambda, MAX_LUMINAIRES);
   Serial.println();
 }
-// Method to print lagrangian multipliers (useful for debug)
-void CONSENSUS::print_lagrangian(){
-  Serial.print("lambda: ");
-  printArray(lambda, MAX_LUMINAIRES);
-  Serial.println();
-}
 
 #endif

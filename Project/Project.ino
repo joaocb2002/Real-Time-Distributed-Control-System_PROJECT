@@ -29,6 +29,9 @@ volatile bool control_flag{ false };    // Timer flag for control loop
 volatile bool calibrated{ false };      //flag to hold status of calibration of this pico
 volatile bool consensus_flag{ false };  //Flag to hold if it is time to run the consensus algorithm
 
+volatile bool stream_l = false;
+volatile bool stream_d = false;
+
 //*************PID Control Variable**************
 struct repeating_timer timer;  // Timer for control loop
 
@@ -90,6 +93,10 @@ void PID_Control_Task(void *parameter) {
 
   // Initialize variables
   unsigned long int delta_control;  // Timer variables
+  unsigned long int previous_time;  // Timer variables
+
+  can_frame frm;
+  icc_msg msg;
 
   // Infinite loop
   while (1) {
@@ -135,6 +142,47 @@ void PID_Control_Task(void *parameter) {
         Serial.println("\nWARNING: Sampling time exceeded! Check control loop!");
       }
     }
+
+    if (micros() - previous_time > STREAM_TIME) {
+      if (stream_d) {
+        if (hub) {
+          Serial.println(u);
+        } else {
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'S';
+          response[1] = 't';
+          response[2] = 'r';
+          response[3] = (uint8_t) u;
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+      }
+      if (stream_l) {
+        if (hub) {
+          Serial.println(lum.lux_func(y));
+        } else {
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'S';
+          response[1] = 't';
+          response[2] = 'r';
+          response[3] = (uint8_t) lum.lux_func(y);
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+      }
+
+      previous_time = micros();
+    }
   }
 }
 
@@ -153,7 +201,7 @@ void Init_System_Task(void *parameter) {
       calibrate_system();
       print_crossover_gains(luminaire_gains, o, num_luminaires);
       lum.set_G(luminaire_gains[0]);
-      
+
 
       // Set calibrated flag to true, using the mutex
       calibrated = true;
@@ -191,13 +239,20 @@ void User_Interface_Task(void *parameter) {
             uint8_t src_id, dest_id, num;
             char b[CAN_MSG_SIZE];
             can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
+
+            if (b[0] == 'S', b[1] == 't', b[2] == 'r') {  //Check if the message is streaming
+              Serial.printf("%d\n",(uint8_t)b[3]);
+              break;
+            }
+
             Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
 
             //Handle message
             if (strcmp(b, "Reset") == 0) {  //Check if the message is to reset the system
               reset_func();                 //Reset the system (induce a reset/calibration)~
               break;
-            } else {
+            } 
+            else {
               if (hub) {  //If Hub Node, probably response to a user command. Send to serial port
                 Serial.printf("Response: %s\n", b);
               } else {  //If not Hub Node, so handle it and send response through user interface queue to hub node
@@ -362,7 +417,6 @@ void setup() {
   xTaskCreateAffinitySet(User_Interface_Task, "User_Interface_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
   xTaskCreateAffinitySet(Consensus_Task, "Consensus_Task", 1000, nullptr, 1, 0b01, nullptr);            //runs in core 0 only
   xTaskCreateAffinitySet(CAN_BUS_Task, "CAN_BUS_Task", 1000, nullptr, 1, 0b10, nullptr);                //runs in core 1 only
-
 }
 
 
@@ -506,7 +560,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   vTaskDelay(3000);
 
   // Register the external illuminance
-  Serial.println("\nMeasuring external illuminance...");
+  Serial.println("\nMeasuring external illuminances...");
   o = lum.lux_func(analog_low_pass_filter());
 
   //Tell other picos to measure their external illuminance
@@ -514,10 +568,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   msg_to_can_frame(&frm, hub_id, CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
-  if (xQueueSendToBack(xQueue_Cal_01, (void *)&msg, portMAX_DELAY) == pdTRUE) {
-    //Print sent message 'b'
-    Serial.printf("Calibration message sent: %s\n", b);
-  }
+  xQueueSendToBack(xQueue_Cal_01, (void *)&msg, portMAX_DELAY);
 
   //Wait for 3 seconds for the other picos to measure their external illuminance
   vTaskDelay(3000);
@@ -538,7 +589,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
     msg.frm = frm;
     msg.cmd = ICC_WRITE_DATA;
     if (xQueueSendToBack(xQueue_Cal_01, &msg, portMAX_DELAY) == pdTRUE) {
-      Serial.printf("Sent 'Calibrate %d' message!\n", pico_id_list[i]);
+      Serial.printf("Calibrating node %d... \n", pico_id_list[i]);
     }
 
     //Wait some time for steady state (5s)
@@ -562,7 +613,7 @@ void calibration_Hub_Node() {  //Function to calibrate the system cross coupling
   msg.frm = frm;
   msg.cmd = ICC_WRITE_DATA;
   if (xQueueSendToBack(xQueue_Cal_01, &msg, portMAX_DELAY) == pdTRUE) {
-    Serial.println("\n\nSent 'End Calibration' message!");
+    Serial.println("Sent 'End Calibration' message!");
   }
 
   //Clear the calibration queues
@@ -591,7 +642,7 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
           can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
 
           // Print the message
-          Serial.printf("\nReceived: %s from id: %d\n", b, int(msg.frm.can_id));
+          Serial.printf("Received: %s from id: %d\n", b, int(msg.frm.can_id));
 
           //Check if the message is to end calibration
           if (strcmp(b, "E Cal") == 0) {
@@ -611,11 +662,10 @@ void calibration_Other_Node() {  //Function to calibrate the system cross coupli
 
             // Extract the node id
             node_id = (uint8_t)b[4];  // Check what is the id to turn on
-            Serial.printf("Calibrating node %d\n", node_id);
+            Serial.printf("Calibrating node %d...\n", node_id);
 
             // Check the position of the id in the list
             int pos = find_id(pico_id_list, node_id);
-            Serial.printf("Position: %d\n", pos);
 
             // Turn on my led, if it is my turn
             if (pos == 0) {
@@ -645,6 +695,9 @@ void reset_func() {  //Function to reset the system parameters: will induce a re
 
   // Reset the control flag
   control_flag = false;
+
+  // Reset the consensus flag
+  consensus_flag = false;
 
   // Reset the timer
   add_repeating_timer_ms(-10, my_repeating_control_callback, NULL, &timer);
@@ -893,10 +946,9 @@ void handle_user_command(char *user_input, int size, char *response, int respons
     if (i == lum.get_type()) {
       lum.set_occupancy(occupancy);
       strcpy(response, "ack");
-      if(occupancy == 0){
+      if (occupancy == 0) {
         x_ref = lum.lower_bound_unocc;
-      }
-      else if(occupancy == 0){
+      } else if (occupancy == 0) {
         x_ref = lum.lower_bound_occ;
       }
     }
@@ -945,12 +997,12 @@ void handle_user_command(char *user_input, int size, char *response, int respons
   } else if (command.startsWith("g e")) {  // Get energy
     sscanf(command.c_str(), "g e %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "e %c %.0f", i, lum.get_total_energy_consumption());
+      sprintf(response, "e %c %f", i, lum.get_total_energy_consumption());
     }
   } else if (command.startsWith("g v")) {  // Get visibility error
     sscanf(command.c_str(), "g v %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "v %c %.1f", i, lum.get_total_visibility_error());
+      sprintf(response, "v %c %f", i, lum.get_total_visibility_error());
     }
   } else if (command.startsWith("g f")) {  // Get flicker
     sscanf(command.c_str(), "g f %c", &i);
@@ -961,51 +1013,71 @@ void handle_user_command(char *user_input, int size, char *response, int respons
     sscanf(command.c_str(), "g c %c", &i);
     if (i == lum.get_type()) {
       sprintf(response, "e %c %.1f", i, PMAX);
-    } 
+    }
   } else if (command.startsWith("g O")) {  // Get lower bound on illuminance on occupied state
     sscanf(command.c_str(), "g O %c", &i);
     if (i == lum.get_type()) {
       sprintf(response, "O %c %.1f", i, lum.lower_bound_occ);
-    } 
-    } else if (command.startsWith("g U")) {  // Get lower bound on illuminance on unnoccupied state
+    }
+  } else if (command.startsWith("g U")) {  // Get lower bound on illuminance on unnoccupied state
     sscanf(command.c_str(), "g U %c", &i);
     if (i == lum.get_type()) {
       sprintf(response, "U %c %.1f", i, lum.lower_bound_unocc);
-    } 
     }
-    else if (command.startsWith("O")) {  // Set lower bound on illuminance on occupied state
+  } else if (command.startsWith("O")) {  // Set lower bound on illuminance on occupied state
     uint8_t bound;
     sscanf(command.c_str(), "O %c %d", &i, &bound);
     if (i == lum.get_type()) {
       lum.lower_bound_occ = bound;
       sprintf(response, "ack");
-    } 
-    } else if (command.startsWith("U")) {  // Set lower bound on illuminance on unoccupied state
+    }
+  } else if (command.startsWith("U")) {  // Set lower bound on illuminance on unoccupied state
     uint8_t bound;
     sscanf(command.c_str(), "U %c %d", &i, &bound);
     if (i == lum.get_type()) {
       lum.lower_bound_unocc = bound;
       sprintf(response, "ack");
-    } 
-    } else if (command.startsWith("g L")) {  // Get the current illuminance lower bound
+    }
+  } else if (command.startsWith("g L")) {  // Get the current illuminance lower bound
     sscanf(command.c_str(), "g L %c", &i);
     if (i == lum.get_type()) {
       sprintf(response, "L %c %.1f", i, x_ref);
-    } 
-    }else if (command.startsWith("c")) {  // Get lower bound on illuminance on occupied state
+    }
+  } else if (command.startsWith("c")) {  // Get lower bound on illuminance on occupied state
     uint8_t cost;
     sscanf(command.c_str(), "c %c %d", &i, &cost);
     if (i == lum.get_type()) {
       lum.lower_bound_occ = cost;
       sprintf(response, "ack");
-    } 
     }
-  
+  } else if (command.startsWith("s")) {  // Start stream of variable
+    char type;
+    sscanf(command.c_str(), "s %c %c", &type, &i);
+    if (i == lum.get_type()) {
+      if (type == 'l') {
+        stream_l = true;
+      } else if (type == 'd') {
+        stream_d = true;
+      }
+      sprintf(response, "ack");
+    }
+  } else if (command.startsWith("S")) {  // Stop stream of variable
+    char type;
+    sscanf(command.c_str(), "S %c %c", &type, &i);
+    if (i == lum.get_type()) {
+      if (type == 'l') {
+        stream_l = false;
+      } else if (type == 'd') {
+        stream_d = false;
+      }
+      sprintf(response, "ack");
+    }
+  }
+
   else {
     strcpy(response, "err");
   }
 }
-
 
 
 //********* Consensus *********
@@ -1028,7 +1100,7 @@ void consensus_algorithm() {
     con.consensus_iterate();
 
     //Print the results of the iteration
-    Serial.printf("Iteration: %d", i);
+    Serial.printf("\n\nIteration: %d", i);
     for(int j = 0; j < MAX_LUMINAIRES; j++){
       Serial.printf(" %f", con.result.d_best[j]);
       duty_cycles[0][j] = (uint16_t) con.result.d_best[j];
@@ -1100,7 +1172,6 @@ void send_all_duties_to_CAN(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_
     b[3] = pico_id_list[i];            // Store the node id of which the duty cycle is referring to
 
     // Store the duty cycle value in 2 bytes
-
     msg_to_bytes(duty, (uint8_t*)&b[4], (uint8_t*)&b[5]);
 
     // Send message to send local duty cycle to the other nodes
@@ -1160,10 +1231,7 @@ void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tm
             uint16_t duty_value = bytes_to_msg((uint8_t)b[4], (uint8_t)b[5]);
 
             // Check if value is too high
-            if (duty_value > 5000){duty_value = 0;}
-
-            // Check if value is too high
-            if (duty_value > 5000){duty_value = 0;}
+            if (duty_value > 1000){duty_value = 0;}
             
             //Check if the message is a duty cycle from other node (correct one)
             if (strncmp(b, "Con", 3) == 0 && src_id == sortedArr[k]) {
