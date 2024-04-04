@@ -2,7 +2,7 @@
 #define MACROS_HH
 
 // Macros for consensus algorithm
-#define MAX_ITER_CONSENSUS 20
+#define MAX_ITER_CONSENSUS 50
 
 // Macros for user input
 #define USER_INPUT_MAX_SIZE 8 // Maximum size of user input: 7 characters + '\0'

@@ -44,7 +44,7 @@ uint8_t find_type(char arr[], char type) {
 
 
 /////////////////////////////////////////////////////
-// Functions to print luminaires IDs, types, and gains
+// Functions to print stuff
 /////////////////////////////////////////////////////
 
 // Function to print the IDs of the luminaires
@@ -128,7 +128,7 @@ void print_luminaires_types(char arr[], int size) {
 /////////////////////////////////////////////////////
 
 //Function to compute the dot product between two vectors.
-float dot(const float vec1[], const float vec2[], int size) {
+float dot(float vec1[], float vec2[], int size) {
   float sum = 0;
   for (int i = 0; i < size; i++) {
     sum += vec1[i] * vec2[i];
@@ -137,7 +137,7 @@ float dot(const float vec1[], const float vec2[], int size) {
 };
 
 // Function to subtract corresponding elements of two vectors (vec1 - vec2)
-void subtractArrays(const float* vec1, const float* vec2, int size, float* result) {
+void subtractArrays(float* vec1, float* vec2, int size, float* result) {
   //vec1 - vec2
   for (int i = 0; i < size; ++i) {
     result[i] = vec1[i] - vec2[i];
@@ -145,7 +145,7 @@ void subtractArrays(const float* vec1, const float* vec2, int size, float* resul
 }
 
 // Function to sum corresponding elements of two vectors (vec1 + vec2)
-void sumArrays(const float* vec1, const float* vec2, int size, float* result) {
+void sumArrays(float* vec1, float* vec2, int size, float* result) {
   //vec1 + vec2
   for (int i = 0; i < size; ++i) {
     result[i] = vec1[i] + vec2[i];
@@ -153,11 +153,16 @@ void sumArrays(const float* vec1, const float* vec2, int size, float* result) {
 }
 
 // Function to compute the product of a vector and a scalar
-void scalarProduct(const float* vec, int size, const float scalar, float* result) {
+void scalarProduct(float* vec, int size, float scalar, float* result) {
   for (int i = 0; i < size; i++) {
     result[i] = scalar * vec[i];
   }
 }
+
+
+/////////////////////////////////////////////////////
+// Functions for array operations
+/////////////////////////////////////////////////////
 
 // Function to copy the contents of one vector to another (float)
 void copyFloatArray(const float* src, int size, float* dest) {
@@ -199,6 +204,11 @@ void printArray(float arr[], int size) {
   Serial.println("]");
 }
 
+
+
+
+/////////////////////////////////////////////////////
+// Other useful functions
 /////////////////////////////////////////////////////
 int findNthSmallestIndex(uint8_t arr[], int size, int n) {
   if (n < 0 || n > size) {
@@ -236,10 +246,6 @@ int findNthSmallestIndex(uint8_t arr[], int size, int n) {
   return index;
 }
 
-
-/////////////////////////////////////////////////////
-// Other useful functions
-/////////////////////////////////////////////////////
 bool all_true_array(bool arr[], int size) {
   for (int i = 0; i < size; i++) {
     if (!arr[i]) {

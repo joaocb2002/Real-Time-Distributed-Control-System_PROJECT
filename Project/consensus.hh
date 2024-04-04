@@ -16,6 +16,7 @@ struct consensus_out {
 
 class CONSENSUS {
 private:
+
   float d_now[MAX_LUMINAIRES] = {0};  //Current duty cycle iterate values
   float d_avg[MAX_LUMINAIRES] = {0};  //The average duty cycle
   float K[MAX_LUMINAIRES];           //Cross coupling gains
@@ -71,6 +72,7 @@ public:
   void update_lagrangian();
   void update_duty(float d_[]);
   void print_consensus();
+  void print_lagrangian();
   void update_lower_bound(float x_ref) { l = x_ref; };
   void update_num_luminaires(int num) { node_num = num; };
   float get_duty_avr(int i) { return d_avg[i]; };
@@ -168,7 +170,7 @@ void CONSENSUS::consensus_iterate() {
 
   //compute minimum constrained to linear boundary
   scalarProduct(y, MAX_LUMINAIRES, 1 / rho, result1);                                                  //(1 / rho) * y
-  scalarProduct(K, MAX_LUMINAIRES, 1 / n * (o - l + (1 / rho) * dot(y, K, MAX_LUMINAIRES)), result2);  //node.k/node.n*(node.o-node.L+(1/rho)*y'*node.k)
+  scalarProduct(K, MAX_LUMINAIRES, (1 / n) * (o - l + (1 / rho) * dot(y, K, MAX_LUMINAIRES)), result2);  //node.k/node.n*(node.o-node.L+(1/rho)*y'*node.k)
   subtractArrays(result1, result2, MAX_LUMINAIRES, d_now);                                             //(1/rho)*y - node.k/node.n*(node.o-node.L+(1/rho)*y'*node.k);
   //check feasibility of minimum constrained to linear boundary
   sol_boundary_linear = check_feasibility();
@@ -244,6 +246,9 @@ void CONSENSUS::consensus_iterate() {
       result.cost_best = cost_temp;
     }
   }
+
+  // Update d_now to the best solution
+  copyFloatArray(result.d_best,MAX_LUMINAIRES,d_now);
 };
 
 // Method to print all members of the class to serial port
@@ -278,6 +283,11 @@ void CONSENSUS::print_consensus(){
   Serial.println("End of consensus values\n\n\n");
 }
 
-
+// Method to print lagrangian multipliers (useful for debug)
+void CONSENSUS::print_lagrangian(){
+  Serial.print("lambda: ");
+  printArray(lambda, MAX_LUMINAIRES);
+  Serial.println();
+}
 
 #endif

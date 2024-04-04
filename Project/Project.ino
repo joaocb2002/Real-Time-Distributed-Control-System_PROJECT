@@ -1021,9 +1021,6 @@ void consensus_algorithm() {
   float d_new_avg[MAX_LUMINAIRES] = {};
   uint16_t best_duties_temp[MAX_LUMINAIRES] = {};
 
-  //Print consensus algorithm start
-  con.print_consensus();
-
   //Iterate the consensus algorithm
   for (int i = 0; i < MAX_ITER_CONSENSUS; i++) {
 
@@ -1042,18 +1039,8 @@ void consensus_algorithm() {
       best_duties_temp[j] = (uint16_t)con.result.d_best[j];
     }
     
-
     //Duty cycle exchange
     duty_cycles_exchange(best_duties_temp, MAX_LUMINAIRES);
-
-    // Print the duty cycles matrix
-    Serial.println("Duty Cycles Matrix:");
-    for (int j = 0; j < num_luminaires; j++) {
-      for (int k = 0; k < num_luminaires; k++) {
-        Serial.printf("%d ", duty_cycles[j][k]);
-      }
-      Serial.println();
-    }
 
     // Compute average duty cycle vector
     for (int i = 0; i < num_luminaires; i++) {
@@ -1069,17 +1056,16 @@ void consensus_algorithm() {
     con.update_average(d_new_avg);
 
     //Print the average of the consensus
-    Serial.println("Average of the consensus:");
+    Serial.printf("Iteration %d - average of the consensus:", i);
     for (int j = 0; j < num_luminaires; j++) {
-      Serial.printf("%f ", d_new_avg[j]);
+      Serial.printf("%.2f ", d_new_avg[j]);
     }
 
     // Update langrangian terms
     con.update_lagrangian();
-    Serial.print("\n\n");
 
     // Delay
-    vTaskDelay(500);
+    vTaskDelay(250);
   }
 
   //Finally here we gather the optimal duty cycles to compute the new reference of my luminaire
@@ -1089,8 +1075,7 @@ void consensus_algorithm() {
 
   // Update the reference value
   x_ref = tmp_l + o;
-
-  Serial.printf("New Reference: %f\n", x_ref);
+  Serial.printf("New Reference Value: %f\n", x_ref);
 }
 
 //******** Consensus helper functions*****
@@ -1169,6 +1154,9 @@ void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tm
 
             // Parse the message
             uint16_t duty_value = bytes_to_msg((uint8_t)b[4], (uint8_t)b[5]);
+
+            // Check if value is too high
+            if (duty_value > 5000){duty_value = 0;}
             
             //Check if the message is a duty cycle from other node (correct one)
             if (strncmp(b, "Con", 3) == 0 && src_id == sortedArr[k]) {
@@ -1184,138 +1172,6 @@ void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tm
     vTaskDelay(250);
   }
 }
-
-/*
-// Function to exchange duty cycles in the other nodes
-void duty_cycles_Other_Node() {
-
-  // Initialize variables
-  icc_msg msg;
-  can_frame frm;
-  int received[num_luminaires] = { 0 };
-
-  // Wait for the hub node to broadcast the duty cycles
-  while (1) {
-    //Check for incoming data in xQueue10
-    while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
-      if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
-        if (msg.frm.data[0] == CAN_ID_BROADCAST || msg.frm.data[0] == pico_id_list[0]) {  //Check if the message is broadcasted (or for me)
-
-          //Extract the message
-          uint8_t src_id, dest_id, num, node_id;
-          char b[CAN_MSG_SIZE];
-          can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
-
-          //Check if the message is to end duty cycle exchange
-          if (strcmp(b, "ConEDut") == 0) {
-            // Clear the queue
-            xQueueReset(xQueue_CONS_10);
-            xQueueReset(xQueue_CONS_01);
-            return;
-          }
-
-          //Check if message is a request to send duty cycles
-          if (strcmp(b, "ConDReq") == 0) {
-            //Send my duty cycle vector to the hub node
-            send_all_duties_to_CAN();
-          }
-
-          //Check if the message is a duty cycle from other node
-          if (strncmp(b, "Con_", 4) == 0) {
-
-            // Extract the duty cycle value
-            duty_cycles[find_id(pico_id_list, src_id)][find_id(pico_id_list, b[4])] = (uint8_t)b[6];
-            received[find_id(pico_id_list, src_id)]++;
-
-            // Send a receipt of the duty cycle to the hub node if all duty cycles have been received from that node
-            if (received[find_id(pico_id_list, src_id)] == num_luminaires) {
-              char b2[CAN_MSG_SIZE] = "ConDRec";
-              msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, b2, sizeof(b2));
-              msg.frm = frm;
-              msg.cmd = ICC_WRITE_DATA;
-              xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-// Function to exchange duty cycles in the hub node
-void duty_cycles_Hub_Node() {
-
-  // Initialize variables
-  icc_msg msg;
-  can_frame frm;
-
-  // Iterate over each one of the picos, asking for their duty cycles
-  for (int i = 0; i < num_luminaires; i++) {
-
-    // Initialize variables
-    bool received_flag_array[num_luminaires] = { false };
-    int counter = 0;
-
-    // If my turn, broadcast my duty cycles
-    if (i == 0) {
-      send_all_duties_to_CAN();
-      received_flag_array[0] = true;
-    } else {  // Send a request to node i
-      //Create message
-      char b[CAN_MSG_SIZE];
-      strcpy(b, "ConDReq");  // "Consensus Duty Request"
-      msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, pico_id_list[i], b, sizeof(b));
-
-      // Send the message through the xQueue_CONS_01
-      msg.frm = frm;
-      msg.cmd = ICC_WRITE_DATA;
-      xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
-    }
-
-    //Wait for confirmation of other nodes of the reception of the duty cycles of current node
-    while (all_true_array(received_flag_array, num_luminaires) == false) {
-      //Check for incoming data in xQueue10
-      while (xQueueReceive(xQueue_CONS_10, &msg, 0) == pdTRUE) {
-        if (msg.cmd == ICC_READ_DATA) {                                                     //Check the command
-          if (msg.frm.data[0] == pico_id_list[i] || msg.frm.data[0] == CAN_ID_BROADCAST) {  //Check if the message is for me (or everyone)
-            //Extract the message
-            uint8_t src_id, dest_id, num, node_id;
-            char b[CAN_MSG_SIZE];
-            can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
-
-            // If message is a received receipt of other node's duty cycle
-            if (strcmp(b, "ConDRec") == 0) {
-              received_flag_array[find_id(pico_id_list, msg.frm.can_id)] = true;
-            }
-
-            // If message is a duty cycle from the requested node
-            if (strncmp(b, "Con_", 4) == 0) {
-
-              // Extract the duty cycle value
-              duty_cycles[i][find_id(pico_id_list, b[4])] = (uint8_t)b[6];
-              counter++;
-
-              // Mark my receipt of the duty cycle and of the other node's receipt
-              if (counter == num_luminaires) {
-                received_flag_array[0] = true;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Tell other picos duty cycle exchange is done
-  char b2[CAN_MSG_SIZE] = "ConEnd";
-  msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b2, sizeof(b2));
-  msg.frm = frm;
-  msg.cmd = ICC_WRITE_DATA;
-  xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
-}
-
-*/
-
 
 
 
