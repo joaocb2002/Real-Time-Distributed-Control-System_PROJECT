@@ -124,14 +124,21 @@ void CONSENSUS::update_average(float d_new_avg[]) {
 void CONSENSUS::update_lagrangian() {
   float result1[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
   float result2[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
+  float result3[MAX_LUMINAIRES] = {};  //Usefull to avoid memory allocations
   subtractArrays(d_now, d_avg, MAX_LUMINAIRES, result1);
   scalarProduct(result1, MAX_LUMINAIRES, rho, result2);
-  sumArrays(lambda, result2, MAX_LUMINAIRES, lambda);
+  sumArrays(lambda, result2, MAX_LUMINAIRES, result3);
+
+  copyFloatArray(result3, MAX_LUMINAIRES, lambda);
 }
 
 void CONSENSUS::consensus_iterate() {
   result.cost_best = 100000;  //Large number
 
+  for(int i = 0;i < MAX_LUMINAIRES;i++){
+    result.d_best[i] = 0;
+  }
+  
   bool sol_unconstrained = true;
   bool sol_boundary_linear = true;
   bool sol_boundary_0 = true;
@@ -214,7 +221,8 @@ void CONSENSUS::consensus_iterate() {
   scalarProduct(K, MAX_LUMINAIRES, 1 / m * (o - l), result2);                                          //(1 / node.m) * node.k * (node.o - node.L)
   scalarProduct(K, MAX_LUMINAIRES, (1 / rho / m) * (K[0] * y[0] - dot(y, K, MAX_LUMINAIRES)), result3);  //(1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k)
   subtractArrays(result1, result2, MAX_LUMINAIRES, d_now);                                             //(1 / rho) * y - (1 / node.m) * node.k * (node.o - node.L)
-  sumArrays(d_now, result3, MAX_LUMINAIRES, d_now);                                                    //(1 / rho) * y - (1 / node.m) * node.k * (node.o - node.L) + (1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k);
+  sumArrays(d_now, result3, MAX_LUMINAIRES,result2);                                                    //(1 / rho) * y - (1 / node.m) * node.k * (node.o - node.L) + (1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k);
+  copyFloatArray(result2, MAX_LUMINAIRES, d_now);
   d_now[0] = 0;
   //check feasibility of minimum constrained to linear and 0 boundary
   sol_linear_0 = check_feasibility();
@@ -232,7 +240,8 @@ void CONSENSUS::consensus_iterate() {
   scalarProduct(K, MAX_LUMINAIRES, 1 / m * (o - l + 100 * K[0]), result2);                             //(1/node.m)*node.k*(node.o-node.L+100*node.k(node.index))
   scalarProduct(K, MAX_LUMINAIRES, 1 / rho / m * (K[0] * y[0] - dot(y, K, MAX_LUMINAIRES)), result3);  //(1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k)
   subtractArrays(result1, result2, MAX_LUMINAIRES, d_now);                                             //(1 / rho) * y - (1/node.m)*node.k*(node.o-node.L+100*node.k(node.index))
-  sumArrays(d_now, result3, MAX_LUMINAIRES, d_now);                                                    //(1 / rho) * y - (1/node.m)*node.k*(node.o-node.L+100*node.k(node.index)) + (1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k);
+  sumArrays(d_now, result3, MAX_LUMINAIRES, result2);                                                    //(1 / rho) * y - (1/node.m)*node.k*(node.o-node.L+100*node.k(node.index)) + (1 / rho / node.m) * node.k * (node.k(node.index) * y(node.index) - y * node.k);
+  copyFloatArray(result2, MAX_LUMINAIRES, d_now);
   d_now[0] = 100;
   //check feasibility of minimum constrained to linear and 100 boundary
   sol_linear_100 = check_feasibility();
@@ -243,6 +252,13 @@ void CONSENSUS::consensus_iterate() {
       copyFloatArray(d_now,MAX_LUMINAIRES, result.d_best);
       result.cost_best = cost_temp;
     }
+  }
+
+  //finally, lets prevent floating point conversion errors
+  for(int i = 0;i < MAX_LUMINAIRES;i++){
+    if(result.d_best[i] < 1 && result.d_best[i] > -1){
+      result.d_best[i] = 1;
+    } 
   }
 };
 

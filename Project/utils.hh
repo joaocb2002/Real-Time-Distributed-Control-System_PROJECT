@@ -145,7 +145,7 @@ void subtractArrays(const float* vec1, const float* vec2, int size, float* resul
 }
 
 // Function to sum corresponding elements of two vectors (vec1 + vec2)
-void sumArrays(const float* vec1, const float* vec2, int size, float* result) {
+void sumArrays(float* vec1, float* vec2, int size, float* result) {
   //vec1 + vec2
   for (int i = 0; i < size; ++i) {
     result[i] = vec1[i] + vec2[i];
@@ -353,14 +353,15 @@ typedef struct can_frame {
 
 //Packs 2 bytes into an unsigned int
 uint16_t bytes_to_msg(uint8_t ls_byte, uint8_t ms_byte) {
-uint16_t b0 {ls_byte}, b1 {ms_byte};
-return b0 + (b1 << 8);
+    uint16_t b0 {ls_byte}, b1 {ms_byte};
+    return (static_cast<uint16_t>(ms_byte) << 8) | ls_byte;
 }
 
 //Unpacks an unsigned int into its constituting 2 bytes
 void msg_to_bytes(uint16_t num, uint8_t *byte_ls, uint8_t *byte_ms) {
-  *byte_ls = num; *byte_ms = (num >> 8);
-} 
+    *byte_ls = static_cast<uint8_t>(num);
+    *byte_ms = static_cast<uint8_t>(num >> 8);
+}
 /////////////////////////////////////////////////////
 //Helper function to print error flags (delete this stuff?)
 /////////////////////////////////////////////////////
