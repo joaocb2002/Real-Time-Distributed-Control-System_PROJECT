@@ -17,6 +17,7 @@ struct consensus_out {
 class CONSENSUS {
 private:
 
+
   float d_now[MAX_LUMINAIRES] = {0};  //Current duty cycle iterate values
   float d_avg[MAX_LUMINAIRES] = {0};  //The average duty cycle
   float K[MAX_LUMINAIRES];           //Cross coupling gains
@@ -72,6 +73,7 @@ public:
   void update_lagrangian();
   void update_duty(float d_[]);
   void print_consensus();
+  void print_lagrangian();
   void print_lagrangian();
   void update_lower_bound(float x_ref) { l = x_ref; };
   void update_num_luminaires(int num) { node_num = num; };
@@ -249,6 +251,9 @@ void CONSENSUS::consensus_iterate() {
 
   // Update d_now to the best solution
   copyFloatArray(result.d_best,MAX_LUMINAIRES,d_now);
+
+  // Update d_now to the best solution
+  copyFloatArray(result.d_best,MAX_LUMINAIRES,d_now);
 };
 
 // Method to print all members of the class to serial port
@@ -283,6 +288,12 @@ void CONSENSUS::print_consensus(){
   Serial.println("End of consensus values\n\n\n");
 }
 
+// Method to print lagrangian multipliers (useful for debug)
+void CONSENSUS::print_lagrangian(){
+  Serial.print("lambda: ");
+  printArray(lambda, MAX_LUMINAIRES);
+  Serial.println();
+}
 // Method to print lagrangian multipliers (useful for debug)
 void CONSENSUS::print_lagrangian(){
   Serial.print("lambda: ");

@@ -1057,7 +1057,9 @@ void consensus_algorithm() {
 
     //Print the average of the consensus
     Serial.printf("Iteration %d - average of the consensus:", i);
+    Serial.printf("Iteration %d - average of the consensus:", i);
     for (int j = 0; j < num_luminaires; j++) {
+      Serial.printf("%.2f ", d_new_avg[j]);
       Serial.printf("%.2f ", d_new_avg[j]);
     }
 
@@ -1065,6 +1067,7 @@ void consensus_algorithm() {
     con.update_lagrangian();
 
     // Delay
+    vTaskDelay(250);
     vTaskDelay(250);
   }
 
@@ -1075,6 +1078,7 @@ void consensus_algorithm() {
 
   // Update the reference value
   x_ref = tmp_l + o;
+  Serial.printf("New Reference Value: %f\n", x_ref);
   Serial.printf("New Reference Value: %f\n", x_ref);
 }
 
@@ -1154,6 +1158,9 @@ void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tm
 
             // Parse the message
             uint16_t duty_value = bytes_to_msg((uint8_t)b[4], (uint8_t)b[5]);
+
+            // Check if value is too high
+            if (duty_value > 5000){duty_value = 0;}
 
             // Check if value is too high
             if (duty_value > 5000){duty_value = 0;}

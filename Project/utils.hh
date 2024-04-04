@@ -45,6 +45,7 @@ uint8_t find_type(char arr[], char type) {
 
 /////////////////////////////////////////////////////
 // Functions to print stuff
+// Functions to print stuff
 /////////////////////////////////////////////////////
 
 // Function to print the IDs of the luminaires
@@ -204,6 +205,11 @@ void printArray(float arr[], int size) {
   Serial.println("]");
 }
 
+
+
+
+/////////////////////////////////////////////////////
+// Other useful functions
 
 
 
