@@ -2,7 +2,7 @@
 #define MACROS_HH
 
 // Macros for consensus algorithm
-#define MAX_ITER_CONSENSUS 50
+#define MAX_ITER_CONSENSUS 30
 
 //Time between streamed value
 #define STREAM_TIME 10000 //microseconds

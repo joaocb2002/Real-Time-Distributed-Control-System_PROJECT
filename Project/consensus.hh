@@ -42,7 +42,7 @@ public:
   consensus_out result;
 
   // Constructor
-  explicit CONSENSUS(float K_[], float o_, int _node_num) {
+  explicit CONSENSUS(float K_[], float o_, int _node_num, float cost_coeff) {
     //Cross-coupling gains vector
     copyFloatArray(K_, MAX_LUMINAIRES,K);
 
@@ -50,7 +50,7 @@ public:
     o = o_;     
 
     //Cost vector (by default: maximum energy for my duty cycle and 0 for the others)
-    c[0] = PMAX;  
+    c[0] = PMAX*cost_coeff;  
 
     //Number of nodes
     node_num = _node_num; 

@@ -31,10 +31,14 @@ private:
   float last_minute_visibility_error[6000] = { 0 };  // Visibility error in the last minute (in LUX)
   float last_minute_flicker[6000] = { 0 };           // Flicker in the last minute (in %)
 
+  // Lower bounds for LUX values
+  float lower_bound_occ = 50;  // Lower bound of lux in occupied state
+  float lower_bound_unocc = 10;  // Upper bound of lux in unoccupied state
+
+  // Cost function coefficient
+  float cost_coeff = 1;
 
 public:
-  float lower_bound_occ = 50;  // Lower bound of lux in occupied state
-  float lower_bound_unocc = 0;  // Upper bound of lux in unoccupied state
 
   // Public member variables
 
@@ -56,8 +60,10 @@ public:
     last_duty_cycle = 0;
     last_last_duty_cycle = 0;
     N = 0;
-    //lower_bound_occ = 0;
-    //lower_bound_unocc = 0;
+    lower_bound_occ = 50;
+    lower_bound_unocc = 20;
+    cost_coeff = 1;
+    
     for (int i = 0; i < 6000; i++) {
       last_minute_energy[i] = 0;
       last_minute_visibility_error[i] = 0;
@@ -131,6 +137,16 @@ public:
   float get_total_flicker() {
     return (total_flicker / N);
   }  //Get total flicker
+  float get_lower_bound_occ() {
+    return (lower_bound_occ);
+  }  // Get lower bound of lux in occupied state
+  float get_lower_bound_unocc() {
+    return (lower_bound_unocc);
+  }  // Get upper bound of lux in unoccupied state
+  float get_cost_coeff() {
+    return (cost_coeff);
+  }  // Get cost function coefficient
+
 
   // **** Setters ****
   void set_occupancy(bool occ) {
@@ -139,6 +155,15 @@ public:
   void set_G(double G_val) {
     G = G_val;
   }  // Set open loop gain of LED subsystem
+  void set_lower_bound_occ(float lux) {
+    lower_bound_occ = lux;
+  }  // Set lower bound of lux in occupied state
+  void set_lower_bound_unocc(float lux) {
+    lower_bound_unocc = lux;
+  }  // Set upper bound of lux in unoccupied state
+  void set_cost_coeff(float coeff) {
+    cost_coeff = coeff;
+  }  // Set cost function coefficient
 
   //**** LUX-voltage conversion functions ****
   double lux_func(int adc) {  // Voltage (from 0-4095) to LUX conversion

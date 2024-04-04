@@ -19,10 +19,10 @@
 //*************Global Variables**************
 volatile float x_ref = 50.0;     // Reference value in LUX (default = 50)
 volatile float o;                // External illuminance (to be measured...)
-float r;                         // Reference value in voltage - obtained from x_ref
-float y;                         // Measured value in voltage (0-4095) - obvained from converting x to voltage
-float u;                         // Control signal in PWM (0-4095) - applied in the actuator
-time_t initial_time = millis();  // Initial time measurement
+volatile float r;                         // Reference value in voltage - obtained from x_ref
+volatile float y;                         // Measured value in voltage (0-4095) - obvained from converting x to voltage
+volatile float u;                         // Control signal in PWM (0-4095) - applied in the actuator
+volatile time_t initial_time = millis();  // Initial time measurement
 
 //*************Global flags**************
 volatile bool control_flag{ false };    // Timer flag for control loop
@@ -38,7 +38,6 @@ volatile bool buffer_d = false;
 float minute_buffer_l[BUFFER_SIZE]; //The buffers
 float minute_buffer_d[BUFFER_SIZE];
 int buffer_current = 0; //To move along the circular buffer
-int buffer_print_counter = 0; //How many items i have printed 
 
 //*************PID Control Variable**************
 struct repeating_timer timer;  // Timer for control loop
@@ -256,8 +255,19 @@ void User_Interface_Task(void *parameter) {
             char b[CAN_MSG_SIZE];
             can_frame_to_msg(&msg.frm, &src_id, &num, &dest_id, b);
 
-            if (b[0] == 'S', b[1] == 't', b[2] == 'r') {  //Check if the message is streaming
+            if (b[0] == 'S'&& b[1] == 't'&& b[2] == 'r') {  //Check if the message is streaming
               Serial.printf("%d\n", (uint8_t)b[3]);
+              break;
+            }
+
+            if (b[0] == 'B') {  //Check if the message is buffer
+              Serial.printf("%d, %d, %d, %d, %d, %d, \n", (uint8_t)b[1],(uint8_t)b[2],(uint8_t)b[3],(uint8_t)b[4],(uint8_t)b[5],(uint8_t)b[6]);
+              break;
+            }
+
+            // Order to start consensus algorithm
+            if (strncmp(b, "SCA", 3)==0){
+              consensus_flag = true;
               break;
             }
 
@@ -273,7 +283,7 @@ void User_Interface_Task(void *parameter) {
               } else {  //If not Hub Node, so handle it and send response through user interface queue to hub node
 
                 // Initialize response message
-                char response[CAN_MSG_SIZE];
+                char response[CAN_MSG_SIZE] = {};
                 handle_user_command(b, sizeof(b), response, sizeof(response));
 
                 // Send response to hub node
@@ -301,9 +311,153 @@ void Consensus_Task(void *parameter) {
   while (1) {
     //Check if it is time to run the consensus algorithm
     if (consensus_flag && calibrated) {
+      // Send a message to all other picos to start the consensus algorithm
+      char b[CAN_MSG_SIZE];
+      strcpy(b, "SCA");
+      icc_msg msg;
+      can_frame frm;
+      msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, CAN_ID_BROADCAST, b, sizeof(b));
+      msg.frm = frm;
+      msg.cmd = ICC_WRITE_DATA;
+      xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY);
       consensus_algorithm();
       consensus_flag = false;
     }
+  }
+}
+
+// Task for priting last minute buffer
+void Print_Buffer_Task(void *parameter) {
+  // Silence warnings about unused parameters.
+  (void)parameter;
+
+  //Variables initialization
+  can_frame frm;
+  icc_msg msg;
+
+  // Infinite loop
+  while (1) {
+    if (buffer_d && calibrated) {
+      int start = buffer_current;
+      if (hub) {
+        int counter = 0;
+        for(int i = start + 1; i < BUFFER_SIZE; i++){
+          Serial.printf("%f, ",minute_buffer_d[i]);
+          counter++;
+          if(counter == 6){
+            counter = 0;
+            Serial.println("");
+          }
+        }
+        for(int i = 0; i <= start;i++){
+          Serial.printf("%f, ",minute_buffer_d[i]);
+          counter++;
+          if(counter == 6){
+            counter = 0;
+            Serial.println("");
+          }
+        }
+      } else {
+        for(int i = start + 1; i < BUFFER_SIZE; i += 5){
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'B'; //B de Buffer
+          response[1] = minute_buffer_d[i];
+          response[2] = minute_buffer_d[i+1];
+          response[3] = minute_buffer_d[i+2];
+          response[4] = minute_buffer_d[i+3];
+          response[5] = minute_buffer_d[i+4];
+          response[6] = minute_buffer_d[i+5];
+
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+        for(int i = 0; i <= start;i+=5){
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'B'; //B de Buffer
+          response[1] = minute_buffer_d[i];
+          response[2] = minute_buffer_d[i+1];
+          response[3] = minute_buffer_d[i+2];
+          response[4] = minute_buffer_d[i+3];
+          response[5] = minute_buffer_d[i+4];
+          response[6] = minute_buffer_d[i+5];
+
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+      }
+      buffer_d = false;
+    }
+    if (buffer_l && calibrated) {
+      int start = buffer_current;
+      if (hub) {
+        int counter = 0;
+        for(int i = start + 1; i < BUFFER_SIZE;i++){
+          Serial.printf("%f, ",minute_buffer_l[i]);
+          counter++;
+          if(counter == 6){
+            counter = 0;
+            Serial.println("");
+          }
+        }
+        for(int i = 0; i <= start;i++){
+          Serial.printf("%f, ",minute_buffer_l[i]);
+          counter++;
+          if(counter == 6){
+            counter = 0;
+            Serial.println("");
+          }
+        }
+      } else {
+        for(int i = start + 1; i < BUFFER_SIZE; i += 5){
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'B'; //B de Buffer
+          response[1] = minute_buffer_l[i];
+          response[2] = minute_buffer_l[i+1];
+          response[3] = minute_buffer_l[i+2];
+          response[4] = minute_buffer_l[i+3];
+          response[5] = minute_buffer_l[i+4];
+          response[6] = minute_buffer_l[i+5];
+
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+        for(int i = 0; i <= start;i+=5){
+          // Send to hub node
+          char response[CAN_MSG_SIZE]{};
+          response[0] = 'B'; //B de Buffer
+          response[1] = minute_buffer_l[i];
+          response[2] = minute_buffer_l[i+1];
+          response[3] = minute_buffer_l[i+2];
+          response[4] = minute_buffer_l[i+3];
+          response[5] = minute_buffer_l[i+4];
+          response[6] = minute_buffer_l[i+5];
+
+          msg_to_can_frame(&frm, pico_id_list[0], CAN_MSG_SIZE, hub_id, response, sizeof(response));
+          msg.frm = frm;
+          msg.cmd = ICC_WRITE_DATA;
+          if (xQueueSendToBack(xQueue_UI_01, &msg, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("Sent '%s' message to node %d!\n", response, hub_id);
+          }
+        }
+      }
+      buffer_l = false;
+    }
+    
   }
 }
 
@@ -431,6 +585,7 @@ void setup() {
   xTaskCreateAffinitySet(Init_System_Task, "Init_System_Task", 1000, nullptr, 1, 0b01, nullptr);        //runs in core 0 only
   xTaskCreateAffinitySet(User_Interface_Task, "User_Interface_Task", 1000, nullptr, 1, 0b01, nullptr);  //runs in core 0 only
   xTaskCreateAffinitySet(Consensus_Task, "Consensus_Task", 1000, nullptr, 1, 0b01, nullptr);            //runs in core 0 only
+  xTaskCreateAffinitySet(Print_Buffer_Task, "Print_Buffer_Task", 1000, nullptr, 1, 0b01, nullptr);      //runs in core 0 only
   xTaskCreateAffinitySet(CAN_BUS_Task, "CAN_BUS_Task", 1000, nullptr, 1, 0b10, nullptr);                //runs in core 1 only
 }
 
@@ -835,13 +990,13 @@ void hub_function() {  //Function to handle user input in the hub node
     }
 
     // Initialize response message
-    char response[USER_INPUT_MAX_SIZE];
+    char response[USER_INPUT_MAX_SIZE] = {};
 
     // If command is intended to Hub node (me), then process it right away
     if (node_id == pico_id_list[0]) {
       handle_user_command(user_input, sizeof(user_input), response, sizeof(response));
-      user_input[USER_INPUT_MAX_SIZE - 1] = '\0';
-      response[USER_INPUT_MAX_SIZE - 1] = '\0';
+      user_input[USER_INPUT_MAX_SIZE-1] = '\0';
+      response[USER_INPUT_MAX_SIZE-1] = '\0';
       Serial.printf("Received: %s\nResponse: %s\n", user_input, response);
       return;
     }
@@ -931,30 +1086,44 @@ void handle_user_command(char *user_input, int size, char *response, int respons
   // Process the command
   if (command.startsWith("d")) {  // Set duty cycle directly (in percentage)
     sscanf(command.c_str(), "d %c %f", &i, &duty_cycle);
-    if (i == lum.get_type()) {
-      x_ref = lum.get_G() * duty_cycle;
+    if (i == lum.get_type() && duty_cycle >= 0 && duty_cycle <= 100) {
+      my_pid.set_u_const(duty_cycle * 4095 / 100); // Set the duty cycle
+      my_pid.set_feedback(0);                      // Set the feedback flag to 0
+      my_pid.set_anti_windup(0);                    // Set the anti-windup flag to 0
+      my_pid.set_feedforward(0);                    // Set the feedforward flag to 0
+      consensus_flag = true;                        // Set the consensus flag to true
+      strcpy(response, "ack");
+    } else {
+      strcpy(response, "err");
     }
-    strcpy(response, "ack");
-  } else if (command.startsWith("g d")) {  // Get duty cycle
+  } else if (command.startsWith("g d")) {  // Get duty cycle (at the moment)
     sscanf(command.c_str(), "g d %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "d %c %.0f", i, u * 100 / 4095);
+      sprintf(response, "d%c %.f", i, u * 100 / 4095);
     }
   } else if (command.startsWith("r")) {  // Set reference value
     sscanf(command.c_str(), "r %c %f", &i, &lux);
-    if (i == lum.get_type()) {
+    if (i == lum.get_type() && lux >= 0 && lux <= 300) {
+      my_pid.set_feedback(1);  // Set the feedback flag to 1
+      my_pid.set_anti_windup(1);  // Set the anti-windup flag to 1
+      my_pid.set_feedforward(1);  // Set the feedforward flag to 1
       x_ref = lux;
+      consensus_flag = true;  // Set the consensus flag to true
+      strcpy(response, "ack");
     }
-    strcpy(response, "ack");
+    else { 
+      strcpy(response, "err");
+    }
   } else if (command.startsWith("g r")) {  // Get reference value
     sscanf(command.c_str(), "g r %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "r %c %.0f", i, x_ref);
+      sprintf(response, "r%c %.0f", i, x_ref);
+      Serial.println(response);
     }
   } else if (command.startsWith("g l")) {  // Measure luminance
     sscanf(command.c_str(), "g l %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "l %c %.1f", i, lum.lux_func(analog_low_pass_filter()));
+      sprintf(response, "l %c %.0f", i, lum.lux_func(analog_low_pass_filter()));
     }
   } else if (command.startsWith("o")) {  // Set occupancy status
     sscanf(command.c_str(), "o %c %d", &i, &occupancy);
@@ -962,15 +1131,16 @@ void handle_user_command(char *user_input, int size, char *response, int respons
       lum.set_occupancy(occupancy);
       strcpy(response, "ack");
       if (occupancy == 0) {
-        x_ref = lum.lower_bound_unocc;
+        x_ref = lum.get_lower_bound_unocc();
       } else if (occupancy == 0) {
-        x_ref = lum.lower_bound_occ;
+        x_ref = lum.get_lower_bound_occ();
       }
+      consensus_flag = true;
     }
   } else if (command.startsWith("g o")) {  // Get occupancy status
     sscanf(command.c_str(), "g o %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "o %c %d", i, lum.get_occupancy());
+      sprintf(response, "o%c %d", i, lum.get_occupancy());
     }
   } else if (command.startsWith("a")) {  // Set anti-windup flag
     sscanf(command.c_str(), "a %c %d", &i, &anti_windup);
@@ -981,7 +1151,7 @@ void handle_user_command(char *user_input, int size, char *response, int respons
   } else if (command.startsWith("g a")) {  // Get anti-windup flag
     sscanf(command.c_str(), "g a %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "a %c %d", i, my_pid.get_anti_windup());
+      sprintf(response, "a%c %d", i, my_pid.get_anti_windup());
     }
   } else if (command.startsWith("k")) {  // Set feedback flag
     sscanf(command.c_str(), "k %c %d", &i, &feedback);
@@ -992,71 +1162,85 @@ void handle_user_command(char *user_input, int size, char *response, int respons
   } else if (command.startsWith("g k")) {  // Get feedback flag
     sscanf(command.c_str(), "g k %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "k %c %d", i, my_pid.get_feedback());
+      sprintf(response, "k%c %d", i, my_pid.get_feedback());
     }
   } else if (command.startsWith("g x")) {  // Get external illuminance
     sscanf(command.c_str(), "g x %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "x %c %.1f", i, o);
+      sprintf(response, "x%c %.1f", i, o);
     }
   } else if (command.startsWith("g p")) {  // Get instantaneous power
     sscanf(command.c_str(), "g p %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "p %c %.1f", i, 1000 * u * 1 / 4095 * PMAX);
+      sprintf(response, "p%c %.1f", i, 1000 * u * 1 / 4095 * PMAX);
     }
   } else if (command.startsWith("g t")) {  //Get time since last restart
     sscanf(command.c_str(), "g t %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "t %c %ld", i, (long)(millis() - initial_time) / 1000);
+      sprintf(response, "t%c %hu", i, (uint16_t)((millis() - initial_time) / (1000)));
     }
   } else if (command.startsWith("g e")) {  // Get energy
     sscanf(command.c_str(), "g e %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "e %c %f", i, lum.get_total_energy_consumption());
+      sprintf(response, "e%c %.1f", i, lum.get_total_energy_consumption());
     }
   } else if (command.startsWith("g v")) {  // Get visibility error
     sscanf(command.c_str(), "g v %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "v %c %f", i, lum.get_total_visibility_error());
+      sprintf(response, "v%c %.1f", i, lum.get_total_visibility_error());
     }
   } else if (command.startsWith("g f")) {  // Get flicker
     sscanf(command.c_str(), "g f %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "f %c %.1f", i, lum.get_total_flicker());
+      sprintf(response, "f%c %.1f", i, lum.get_total_flicker());
     }
   } else if (command.startsWith("g c")) {  // Get current energy cost
     sscanf(command.c_str(), "g c %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "e %c %.1f", i, PMAX);
+      sprintf(response, "e%c %.1f", i, lum.get_cost_coeff());
     }
   } else if (command.startsWith("g O")) {  // Get lower bound on illuminance on occupied state
     sscanf(command.c_str(), "g O %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "O %c %.1f", i, lum.lower_bound_occ);
+      sprintf(response, "O%c %.1f", i, lum.get_lower_bound_occ());
     }
   } else if (command.startsWith("g U")) {  // Get lower bound on illuminance on unnoccupied state
     sscanf(command.c_str(), "g U %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "U %c %.1f", i, lum.lower_bound_unocc);
+      sprintf(response, "U%c %.1f", i, lum.get_lower_bound_unocc());
     }
   } else if (command.startsWith("O")) {  // Set lower bound on illuminance on occupied state
     uint8_t bound;
     sscanf(command.c_str(), "O %c %d", &i, &bound);
     if (i == lum.get_type()) {
-      lum.lower_bound_occ = bound;
+      lum.set_lower_bound_occ(bound);
       sprintf(response, "ack");
+
+      if (lum.get_occupancy() == 1) {
+        x_ref = bound;
+        consensus_flag = true;
+      }
     }
   } else if (command.startsWith("U")) {  // Set lower bound on illuminance on unoccupied state
     uint8_t bound;
     sscanf(command.c_str(), "U %c %d", &i, &bound);
     if (i == lum.get_type()) {
-      lum.lower_bound_unocc = bound;
+      lum.set_lower_bound_unocc(bound);
       sprintf(response, "ack");
+
+      if (lum.get_occupancy() == 0) {
+        x_ref = bound;
+        consensus_flag = true;
+      }
     }
   } else if (command.startsWith("g L")) {  // Get the current illuminance lower bound
     sscanf(command.c_str(), "g L %c", &i);
     if (i == lum.get_type()) {
-      sprintf(response, "L %c %.1f", i, x_ref);
+      if (lum.get_occupancy() == 0) {
+        sprintf(response, "L%c %.1f", i, lum.get_lower_bound_unocc());
+      } else {
+        sprintf(response, "L%c %.1f", i, lum.get_lower_bound_occ());
+      }
     }
   } else if (command.startsWith("g b")) {  // Get the last minute buffer
     char type;
@@ -1070,12 +1254,13 @@ void handle_user_command(char *user_input, int size, char *response, int respons
         sprintf(response, "ack");
       }
     }
-  } else if (command.startsWith("c")) {  // Get lower bound on illuminance on occupied state
+  } else if (command.startsWith("c")) {  // Set the energy cost
     uint8_t cost;
     sscanf(command.c_str(), "c %c %d", &i, &cost);
     if (i == lum.get_type()) {
-      lum.lower_bound_occ = cost;
+      lum.set_cost_coeff(cost);
       sprintf(response, "ack");
+      consensus_flag = true;
     }
   } else if (command.startsWith("s")) {  // Start stream of variable
     char type;
@@ -1100,6 +1285,9 @@ void handle_user_command(char *user_input, int size, char *response, int respons
         stream_d = false;
         sprintf(response, "ack");
       }
+      else {
+        strcpy(response, "err");
+      }
     }
   }
 
@@ -1114,8 +1302,12 @@ void handle_user_command(char *user_input, int size, char *response, int respons
 void consensus_algorithm() {
 
   // Initialize the consensus object with the gains
-  CONSENSUS con(luminaire_gains, o, num_luminaires);
+  CONSENSUS con(luminaire_gains, o, num_luminaires, lum.get_cost_coeff());
   con.update_lower_bound(x_ref);
+
+  // Print lower bound
+  Serial.println("Initializing consensus algorithm...");
+  Serial.printf("Lower bound: %f\n", x_ref);
 
   // Initialize variables
   float tmp_l = 0;
@@ -1128,14 +1320,7 @@ void consensus_algorithm() {
     //Perform the consensus iterate
     con.consensus_iterate();
 
-    //Print the results of the iteration
-    Serial.printf("\n\nIteration: %d", i);
-    for (int j = 0; j < MAX_LUMINAIRES; j++) {
-      Serial.printf(" %f", con.result.d_best[j]);
-      duty_cycles[0][j] = (uint16_t)con.result.d_best[j];
-    }
-
-    //Update the duty cycle matrix with my values in row 0~
+    //Update the duty cycle matrix with my values in row 0
     for (int j = 0; j < num_luminaires; j++) {
       best_duties_temp[j] = (uint16_t)con.result.d_best[j];
     }
@@ -1154,22 +1339,13 @@ void consensus_algorithm() {
     }
 
     //Update the average of the consensus
-    con.update_average(d_new_avg);
-
-    //Print the average of the consensus
-    Serial.printf("Iteration %d - average of the consensus:", i);
-    Serial.printf("Iteration %d - average of the consensus:", i);
-    for (int j = 0; j < num_luminaires; j++) {
-      Serial.printf("%.2f ", d_new_avg[j]);
-      Serial.printf("%.2f ", d_new_avg[j]);
-    }
+    con.update_average(d_new_avg);     
 
     // Update langrangian terms
     con.update_lagrangian();
 
     // Delay
-    vTaskDelay(250);
-    vTaskDelay(250);
+    vTaskDelay(100);
   }
 
   //Finally here we gather the optimal duty cycles to compute the new reference of my luminaire
@@ -1179,7 +1355,6 @@ void consensus_algorithm() {
 
   // Update the reference value
   x_ref = tmp_l + o;
-  Serial.printf("New Reference Value: %f\n", x_ref);
   Serial.printf("New Reference Value: %f\n", x_ref);
 }
 
@@ -1212,7 +1387,7 @@ void send_all_duties_to_CAN(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_
     xQueueSendToBack(xQueue_CONS_01, &msg, portMAX_DELAY);
 
     // Delay
-    vTaskDelay(250);
+    vTaskDelay(50);
   }
 }
 
@@ -1272,8 +1447,7 @@ void duty_cycles_exchange(uint16_t best_duties_temp[MAX_LUMINAIRES], int size_tm
         }
       }
     }
-    // Delay
-    vTaskDelay(250);
+    vTaskDelay(50);
   }
 }
 

@@ -17,6 +17,8 @@ class CPID {
 
     float u, v; // Output variables 
 
+    float u_const; //Used when there is not control: user sets duty directly
+
     const double ulow = 0, uhigh = 4095; // Control signal limits
 
     public:
@@ -30,6 +32,7 @@ class CPID {
     bool get_feedback();
     void set_feedforward(bool _feedforward);
     bool get_feedforward();
+    void set_u_const(float arg);
     void update_parameters(double G, double H, double tau);
     void compute_coefficients();
     float compute_control(float r, float y);
@@ -51,7 +54,7 @@ inline CPID::CPID(float _h, float _K, float b_, float Ti_, float Td_, float Tt_,
 
 // Resetter
 void CPID::reset_pid() {
-    I = 0; D = 0; P = 0; y_old = 0; k_old = 0; b_old = 0; ad = 0; bd = 0; ao = 0;
+    I = 0; D = 0; P = 0; y_old = 0; k_old = 0; b_old = 0; ad = 0; bd = 0; ao = 0; u = 0; v = 0; N = 0, u_const = 0;
 }
 
 // Member function to update controller parameters depending on set point LUX value
@@ -69,6 +72,7 @@ void CPID::set_feedback(bool _feedback) {feedback = _feedback;} // Member functi
 bool CPID::get_feedback() {return feedback;} // Member function to get feedback flag
 void CPID::set_feedforward(bool _feedforward) {feedforward = _feedforward;} // Member function to set feedforward flag
 bool CPID::get_feedforward() {return feedforward;} // Member function to get feedforward flag
+void CPID::set_u_const(float arg) {u_const = arg;} // Member function to set control signal to zero
 
 
 // Member function to compute controller coefficients
@@ -99,7 +103,7 @@ float CPID::compute_control(float r, float y) {
         v = K*(b*r-y); //Control signal without saturation
         u = saturate(v, ulow, uhigh); 
     } else { //No control
-        u = 0;
+        u = u_const;
     }
 
     //Return control signal
