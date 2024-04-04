@@ -74,7 +74,6 @@ public:
   void update_duty(float d_[]);
   void print_consensus();
   void print_lagrangian();
-  void print_lagrangian();
   void update_lower_bound(float x_ref) { l = x_ref; };
   void update_num_luminaires(int num) { node_num = num; };
   float get_duty_avr(int i) { return d_avg[i]; };
